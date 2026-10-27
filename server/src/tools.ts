@@ -3,6 +3,7 @@ import type { ClearstoryClient } from "./clearstory.js";
 import type { Config } from "./config.js";
 import { registerCompanyTools } from "./tools/company.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerReferenceTools } from "./tools/reference.js";
 import { registerNotificationTools } from "./tools/notifications.js";
 import { registerTagTools } from "./tools/tags.js";
 import { registerCorTools } from "./tools/cors.js";
@@ -13,6 +14,7 @@ export interface ToolContext { server: McpServer; cs: ClearstoryClient; cfg: Con
 const MODULES: ((t: ToolContext) => void)[] = [
   registerCompanyTools,
   registerJobTools,
+  registerReferenceTools,
   registerNotificationTools,
   registerTagTools,
   registerCorTools,
