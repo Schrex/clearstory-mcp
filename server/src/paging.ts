@@ -85,6 +85,26 @@ export async function pullPage<T = Rec>(cs: ClearstoryClient, sources: Source | 
 export const pullAll = <T = Rec>(cs: ClearstoryClient, sources: Source | Source[]) =>
   pullPage<T>(cs, sources, { skip: 0, limit: Number.MAX_SAFE_INTEGER });
 
+/**
+ * skip/limit over a list already read whole (an unpaged endpoint, or records filtered in the connector).
+ * `scope` is the read's scope: total_matching only when complete.
+ */
+export function localPage<T = Rec>(all: T[], o: { skip?: number; limit?: number }, scope: Pulled["scope"] = "complete"): Pulled<T> {
+  const skip = o.skip ?? 0;
+  const records = all.slice(skip, skip + (o.limit ?? DEFAULT_LIMIT));
+  const end = skip + records.length;
+  const out: Pulled<T> = { records, skip, scope };
+  if (scope === "complete") out.total_matching = all.length;
+  if (end < all.length) out.next_skip = end;
+  return out;
+}
+
+/** Pull every record from `sources`, keep those matching `keep`, and page the result locally. */
+export async function pullFiltered<T = Rec>(cs: ClearstoryClient, sources: Source | Source[], keep: (r: T) => boolean, page: { skip?: number; limit?: number }): Promise<Pulled<T>> {
+  const all = await pullAll<T>(cs, sources);
+  return localPage(all.records.filter(keep), page, all.scope);
+}
+
 /** Standard list reply: { total_matching, returned, skip, next_skip, scope, [key]: shaped records }. */
 export function listReply<T>(key: string, p: Pulled<T>, shape: (r: T) => unknown) {
   return {

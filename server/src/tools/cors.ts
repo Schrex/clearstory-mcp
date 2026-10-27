@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { ToolContext } from "../tools.js";
 import type { Query } from "../clearstory.js";
-import { jobArgs, resolveJob, resolveJobId } from "../jobs.js";
+import { hasJob, jobArgs, resolveJob, resolveJobId } from "../jobs.js";
 import { dateRange, dayArg } from "../dates.js";
-import { DEFAULT_LIMIT, listArgs, listReply, pullAll, pullPage, type Pulled } from "../paging.js";
-import { COR_STATUS, NOT_VOID, VOID_STAGES, shapeCor, shapeLineItems, corStatus, type CorStatus } from "../cors.js";
+import { listArgs, listReply, pullAll, pullFiltered, pullPage } from "../paging.js";
+import { COR_STATUS, NOT_VOID, VOID_STAGES, shapeCor, shapeLineItems, corStatus, tmTagIds, type CorStatus } from "../cors.js";
 import { compact, day, hours, money, reply, type Rec } from "../util.js";
 
 const SORT = { days_in_review: "daysInReview", date_submitted: "dateSubmitted", co_issue_date: "coIssueDate", updated: "updatedAt" } as const;
@@ -15,6 +15,9 @@ const reasonMatches = (c: Rec, q: string) => {
   const g = (r?.reasonCategoryGroup ?? c.reasonCategoryGroup) as Rec | null | undefined;
   return [r?.name, g?.name].some((n) => typeof n === "string" && n.toLowerCase().includes(q));
 };
+
+/** No linked T&M Tags (Clearstory's count, else its tag list). */
+const hasNoTags = (c: Rec) => (typeof c.tmTagCount === "number" ? c.tmTagCount : tmTagIds(c).length) === 0;
 
 export function registerCorTools({ server, cs }: ToolContext) {
   server.tool(
@@ -28,7 +31,7 @@ export function registerCorTools({ server, cs }: ToolContext) {
       stages: z.array(z.string()).optional().describe("Clearstory stages, e.g. owner_review, pricing, void, waived."),
       label_ids: z.array(z.number().int().positive()).optional().describe("Label ids (any match)."),
       reason_category: z.string().optional().describe("Part of the reason category (or its group) name."),
-      has_tm_tags: z.boolean().optional().describe("true = only CORs with one or more linked T&M Tags."),
+      has_tm_tags: z.boolean().optional().describe("true = only CORs with one or more linked T&M Tags; false = only CORs with none."),
       include_void: z.boolean().optional().describe("Also return Void (incl. Waived) CORs."),
       include_archived_jobs: z.boolean().optional().describe("Also return CORs on archived Jobs."),
       submitted_from: dayArg("Submitted on or after."),
@@ -51,7 +54,7 @@ export function registerCorTools({ server, cs }: ToolContext) {
         stages: a.stages?.length ? a.stages.join(",") : undefined,
         customerIds: a.gc_id,
         labelIds: a.label_ids?.length ? a.label_ids.join(",") : undefined,
-        hasTags: a.has_tm_tags ? 1 : undefined,
+        hasTags: a.has_tm_tags === true ? 1 : undefined,
         includeFromArchivedProjects: a.include_archived_jobs ? true : undefined,
         fromDateSubmitted: submitted.from, untilDateSubmitted: submitted.until,
         fromCOIssueDate: coIssued.from, untilCOIssueDate: coIssued.until,
@@ -62,28 +65,22 @@ export function registerCorTools({ server, cs }: ToolContext) {
       if (a.statuses?.length) query.statuses = a.statuses.map((s) => COR_STATUS[s]).join(",");
       else if (!askedVoid) query.statuses = NOT_VOID.join(",");
 
-      if (a.job !== undefined || a.job_id !== undefined) {
+      if (hasJob(a)) {
         // Received CORs carry the sender's projectId, so match our Job by its job number instead.
         if (inbox === "received") query.companyJobNumber = a.job?.trim() || String((await resolveJob(cs, a)).jobNumber ?? "");
         else query.projectIds = await resolveJobId(cs, a);
       }
 
       const source = { path: "/cors", query };
-      let p: Pulled<Rec>;
+      const page = { skip: a.skip, limit: a.limit };
+      // Filters Clearstory lacks (reason category; "no T&M Tags", as hasTags only takes 1): read all, filter, page here.
+      const keep: ((c: Rec) => boolean)[] = [];
       const reason = a.reason_category?.trim().toLowerCase();
-      if (reason) {
-        // Clearstory has no reason-category filter: read all, filter, then page the filtered list.
-        const all = await pullAll<Rec>(cs, source);
-        const hits = all.records.filter((c) => reasonMatches(c, reason));
-        const skip = a.skip ?? 0;
-        const records = hits.slice(skip, skip + (a.limit ?? DEFAULT_LIMIT));
-        const end = skip + records.length;
-        p = { records, skip, scope: all.scope };
-        if (all.scope === "complete") p.total_matching = hits.length;
-        if (end < hits.length) p.next_skip = end;
-      } else {
-        p = await pullPage<Rec>(cs, source, { skip: a.skip, limit: a.limit });
-      }
+      if (reason) keep.push((c) => reasonMatches(c, reason));
+      if (a.has_tm_tags === false) keep.push(hasNoTags);
+      const p = keep.length
+        ? await pullFiltered<Rec>(cs, source, (c) => keep.every((k) => k(c)), page)
+        : await pullPage<Rec>(cs, source, page);
       return reply(listReply("cors", p, (c) => shapeCor(c, a.detail)));
     },
   );

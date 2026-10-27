@@ -2,9 +2,9 @@
 // reason categories and users. Clearstory "customer" is a GC; "project" is a Job (GLOSSARY.md).
 import { z } from "zod";
 import type { ToolContext } from "../tools.js";
-import { DEFAULT_LIMIT, listArgs, listReply, pullAll, pullPage, type Pulled } from "../paging.js";
-import { jobArgs, resolveJobId } from "../jobs.js";
-import { compact, money, reply, type Rec } from "../util.js";
+import { listArgs, listReply, localPage, pullAll, pullPage } from "../paging.js";
+import { hasJob, jobArgs, resolveJobId } from "../jobs.js";
+import { compact, money, personName, reply, type Rec } from "../util.js";
 
 const shapeOffice = (o: Rec, detail?: boolean): Rec => compact({
   id: o.id, name: o.name, code: o.customId, city: o.city, state: o.state,
@@ -42,14 +42,6 @@ const shapeRate = (type: RateType, r: Rec, detail?: boolean): Rec => {
       updated_at: r.updatedAt,
     } : {}),
   });
-};
-
-/** skip/limit over a list Clearstory returns whole (no limit/offset on the endpoint). */
-const localPage = (all: Rec[], o: { skip?: number; limit?: number }): Pulled => {
-  const skip = o.skip ?? 0;
-  const records = all.slice(skip, skip + (o.limit ?? DEFAULT_LIMIT));
-  const end = skip + records.length;
-  return { records, total_matching: all.length, skip, scope: "complete", ...(end < all.length ? { next_skip: end } : {}) };
 };
 
 export function registerReferenceTools({ server, cs }: ToolContext) {
@@ -100,7 +92,7 @@ export function registerReferenceTools({ server, cs }: ToolContext) {
       ...listArgs,
     },
     async (a) => {
-      const perJob = a.job !== undefined || a.job_id !== undefined;
+      const perJob = hasJob(a);
       const jobId = perJob ? await resolveJobId(cs, a) : undefined;
       const query = {
         internalId: a.internal_id?.trim(), rateGroupId: perJob ? undefined : a.rate_group_id,
@@ -145,14 +137,13 @@ export function registerReferenceTools({ server, cs }: ToolContext) {
           ...(a.detail ? { description: c.description, default: c.isDefault, sort_order: c.sortOrder, updated_at: c.updatedAt } : {}),
         })));
       }
-      const hasJob = a.job !== undefined || a.job_id !== undefined;
       const query = {
-        officeId: a.office_id, projectId: hasJob ? await resolveJobId(cs, a) : undefined, email: a.email?.trim(),
+        officeId: a.office_id, projectId: hasJob(a) ? await resolveJobId(cs, a) : undefined, email: a.email?.trim(),
         sortBy: "lastName", sortDirection: "asc",
       };
       const p = await pullPage<Rec>(cs, { path: "/users", query }, page);
       return reply(listReply("users", p, (u) => compact({
-        id: u.id, name: [u.firstName, u.lastName].filter(Boolean).join(" "), email: u.email, role: u.roleName,
+        id: u.id, name: personName({ firstName: u.firstName, lastName: u.lastName }), email: u.email, role: u.roleName,
         offices: ((u.offices as Rec[] | undefined) ?? []).map((o) => o.name),
         ...(a.detail ? { role_id: u.roleId, office_ids: ((u.offices as Rec[] | undefined) ?? []).map((o) => o.id), updated_at: u.updatedAt } : {}),
       })));

@@ -146,6 +146,20 @@ test("list_cors bad dates error naming the field, before any Clearstory call", a
   assert.equal(h.apiCalls().length, 0);
 });
 
+test("list_cors has_tm_tags=false returns only CORs with no linked T&M Tags (Clearstory's hasTags only takes 1)", async () => {
+  const h = await harness({ "GET /cors": envelope([
+    corSent({ id: 1, tmTagCount: 0, tmTags: [] }),
+    corSent({ id: 2, tmTagCount: 1, tmTags: [corTag()] }),
+    corSent({ id: 3, tmTagCount: 2, tmTags: [] }),
+    corSent({ id: 4, tmTagCount: undefined, tmTags: undefined }),
+  ]) });
+  const r = await h.call("list_cors", { has_tm_tags: false });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(corsCall(h).get("hasTags"), null);
+  assert.deepEqual(r.json.cors.map((c: { id: number }) => c.id), [1, 4]);
+  assert.equal(r.json.total_matching, 2);
+});
+
 test("list_cors reason category filters by name (Clearstory has no such filter) and keeps paging honest", async () => {
   const all = [
     corSent({ id: 1 }),
@@ -184,7 +198,7 @@ test("list_cors detail adds labels, reason category, dates, GC numbers, revision
   assert.equal(c.original_cor_id, 6200);
   assert.equal(c.updated_at, "2026-10-01T08:00:00.000Z");
   assert.deepEqual(c.tm_tags[0], {
-    id: 5101, number: "0041", title: "Extra trench rock", status: "signed", work_date: "2026-09-14", signed_on: "2026-09-16", total_hours: 12.3333,
+    id: 5101, tag_number: "0041", title: "Extra trench rock", status: "signed", work_date: "2026-09-14", signed_on: "2026-09-16", total_hours: 12.3333,
   });
 });
 
@@ -207,7 +221,7 @@ test("get_cor returns description, Ball in Court, Days in Review, hours ST/OT/DT
   assert.equal(c.line_items.other[0].description, "Disposal fee");
   assert.deepEqual(c.line_items.markups, [{ description: "OH&P", applies_to: "labor", rate: 15, rate_type: "percent", total: 145.1 }]);
   assert.deepEqual(c.tm_tag_ids, [5101, 5102]);
-  assert.equal(c.tm_tags[1].number, "0042");
+  assert.equal(c.tm_tags[1].tag_number, "0042");
   assert.equal(c.revisions, undefined, "revisions only on detail");
   assert.deepEqual(h.apiCalls().map((x) => new URL(x.url).pathname.replace(/.*\/v1/, "")), ["/cors/6201"]);
   assert.doesNotMatch(r.text, /project|customer/i);

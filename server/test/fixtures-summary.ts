@@ -28,7 +28,7 @@ export function inReviewCor(id: number, asOf: string, days: number, over: Record
   return corSent({
     id, corNumber: `COR-${id}`, status: "in_review", stage: "in_review", ballInCourt: "customer",
     requestedAmount: 1000, inReviewAmount: 1000, approvedToProceedAmount: 0,
-    dateSubmitted: `${submitted}T22:30:00.000Z`, daysInReview: 999, ...over,
+    dateSubmitted: `${submitted}T22:30:00.000Z`, daysInReview: null, ...over,
   });
 }
 

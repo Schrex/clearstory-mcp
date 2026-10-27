@@ -10,14 +10,17 @@ export const COR_STATUS = {
 } as const;
 export type CorStatus = keyof typeof COR_STATUS;
 
+/** Clearstory's Placeholder status (counted, shown only when present). */
+export const PLACEHOLDER = "placeholder";
+
 /** Clearstory statuses sent when Void is not asked for (everything but "rejected"). */
-export const NOT_VOID = ["in_review", "approved_to_proceed", "approved_co_issued", "placeholder"];
+export const NOT_VOID: string[] = [COR_STATUS["In Review"], COR_STATUS["Approved to Proceed"], COR_STATUS["Approved CO Issued"], PLACEHOLDER];
 /** Stages that mean Void. */
 export const VOID_STAGES = ["void", "waived"];
 
 const STATUS_NAME: Record<string, string> = {
   in_review: "In Review", approved_to_proceed: "Approved to Proceed", approved_co_issued: "Approved CO Issued",
-  rejected: "Void", placeholder: "Placeholder",
+  rejected: "Void", void: "Void", placeholder: "Placeholder", draft: "Draft",
 };
 /** Clearstory status → GLOSSARY name (unknown values pass through). */
 export const corStatus = (s: unknown) => (typeof s === "string" ? STATUS_NAME[s] ?? s : undefined);
@@ -86,7 +89,7 @@ export function shapeCor(c: Rec, detail = false): Rec {
     }),
     tm_tags: ((c.tmTags as Rec[] | undefined) ?? []).map((t) => compact({
       id: t.id,
-      number: t.paddedTagNumber ?? t.number,
+      tag_number: t.paddedTagNumber ?? t.number,
       title: t.title,
       status: t.status,
       work_date: day(t.dateOfWorkPerformed),
@@ -94,6 +97,24 @@ export function shapeCor(c: Rec, detail = false): Rec {
       total_hours: hours(t.totalHours),
     })),
   };
+}
+
+/**
+ * A COR embedded in a Change Notification (definitions.ChangeNotificationCorContract): the COR it was
+ * answered with, in shapeCor's field names. undefined when there is none.
+ */
+export function shapeLinkedCor(c: unknown, detail = false): Rec | undefined {
+  const r = c as Rec | null | undefined;
+  if (!r || (!r.number && !r.uuid && !r.title)) return undefined;
+  return compact({
+    cor_number: r.number, title: r.title, status: corStatus(r.status),
+    ...(r.stage === "waived" ? { void_kind: "Waived" } : {}),
+    total: money(r.total), date_submitted: day(r.dateSubmitted),
+    ...(detail ? {
+      uuid: r.uuid, gc_co_number: r.customerCoNumber, approved_to_proceed_date: day(r.approvedToProceedDate),
+      co_issue_date: day(r.coIssueDate), void_date: day(r.voidDate), updated_at: r.updatedAt,
+    } : {}),
+  });
 }
 
 const line = (l: Rec) => compact({

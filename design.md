@@ -54,7 +54,7 @@ v0.1: Claude joins the two connectors (decided, [ADR 0002](docs/adr/0002-separat
 - Match to T&M Tags by `hcssTimecardId` (certain); fallback Job + work date + cost code = **probable**, never certain.
 - Report by stage: Untagged → Unsigned → Signed, not on a COR → On a COR, not approved.
 - Default window: last 60 days of work dates; per-Job pull recommended.
-- `list_tm_tags` must return `hcssTimecardId`, `costCode`, `dateOfWorkPerformed`, status; `list_cors` with `hasTags=1` must return each COR's tag ids so "Signed, not on a COR" is computable. (UNVERIFIED that `tmTags[]` on CORs lists every linked tag; check with a real token.)
+- `list_tm_tags` must return `hcss_timecard_id` (Clearstory `hcssTimecardId`), cost code, work date, status, and take a `work_date_from`/`work_date_until` window (main or additional work dates); `list_cors` with `hasTags=1` must return each COR's tag ids so "Signed, not on a COR" is computable. (UNVERIFIED that `tmTags[]` on CORs lists every linked tag; check with a real token.)
 - Priority 2: COR aging / Exposure. Priority 3: reporting/export (v0.2).
 
 ## Lessons applied from HeavyJob

@@ -126,6 +126,32 @@ test("get_cor_aging marks totals scope: partial when the pull hits the request l
   assert.match(r.json.note, /incomplete/);
 });
 
+test("get_cor_aging uses Clearstory's Days in Review when present, else days from submission to as_of", async () => {
+  const asOf = "2026-10-27";
+  const h = await harness({ "GET /cors": envelope([
+    inReviewCor(1, asOf, 10, { daysInReview: 45 }),
+    inReviewCor(2, asOf, 20),
+  ]) });
+  const r = await h.call("get_cor_aging", { as_of: asOf });
+  assert.equal(r.isError, false, r.text);
+  const got = Object.fromEntries(r.json.gcs[0].cors.map((c: Record<string, unknown>) => [c.id, [c.days_in_review, c.bucket, c.stale]]));
+  assert.deepEqual(got, { 1: [45, "31-60", true], 2: [20, "15-30", false] });
+});
+
+test("get_cor_log_summary: request limit hit during per-contract totals gives scope partial with the contracts read", async () => {
+  const two = [{ id: 9001, name: "Prime Sitework" }, { id: 9002, name: "Storm Addendum" }];
+  const h = await harness({
+    "GET /projects": envelope([projectRecord({ contracts: two })]),
+    "GET /cors/overview": corOverview(),
+    "GET /cors/contract-summary": contractSummary(),
+  }, { cfg: { maxSubrequests: 4 } }); // token, project, overview, first contract
+  const r = await h.call("get_cor_log_summary", { job: "23104" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.scope, "partial");
+  assert.deepEqual(r.json.contracts.map((c: { contract_id: number }) => c.contract_id), [9001]);
+  assert.match(r.json.note, /request limit/);
+});
+
 test("get_cor_aging rejects a bad as_of naming the field", async () => {
   const h = await harness({ "GET /cors": envelope([]) });
   const r = await h.call("get_cor_aging", { as_of: "10/27/2026" });

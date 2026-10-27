@@ -10,6 +10,9 @@ export const jobArgs = {
   job_id: z.number().int().positive().optional().describe("Clearstory Job id (from search_jobs). Use instead of job."),
 };
 
+/** True when the args name a Job (job number or job_id). */
+export const hasJob = (a: { job?: string; job_id?: number }) => a.job !== undefined || a.job_id !== undefined;
+
 const listed = (jobNumber: string): Source[] => [
   { path: "/projects", query: { jobNumber } },
   { path: "/projects", query: { jobNumber, archived: true } },

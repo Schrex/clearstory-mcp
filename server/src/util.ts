@@ -22,5 +22,10 @@ const num = (v: unknown): number | undefined => {
 export const money = (v: unknown) => { const n = num(v); return n === undefined ? undefined : Math.round(n * 100) / 100; };
 /** Hours / quantities: 4 dp. */
 export const hours = (v: unknown) => { const n = num(v); return n === undefined ? undefined : Math.round(n * 1e4) / 1e4; };
+/** Clearstory user/person → "First Last", else their email. */
+export const personName = (p: unknown): string | undefined => {
+  const r = p as Rec | null | undefined;
+  return r ? [r.firstName, r.lastName].filter(Boolean).join(" ") || (r.email as string | undefined) : undefined;
+};
 /** ISO timestamp → YYYY-MM-DD (the date as Clearstory stored it, UTC). */
 export const day = (v: unknown) => (typeof v === "string" && v.length >= 10 ? v.slice(0, 10) : undefined);

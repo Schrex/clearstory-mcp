@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness } from "./harness.ts";
-import { envelope } from "./fixtures.ts";
+import { contractDetail, envelope } from "./fixtures.ts";
 import { cnCor, cnReceived, cnSent, daysFromNow } from "./fixtures-notifications.ts";
 
 const q = (h: { apiCalls: () => { url: string }[] }, i = 0) => new URL(h.apiCalls()[i].url).searchParams;
@@ -12,11 +12,11 @@ test("list_change_notifications defaults to the Received inbox and shows type, d
   const r = await h.call("list_change_notifications");
   assert.equal(r.isError, false, r.text);
   assert.equal(q(h).get("inbox"), "received");
-  assert.equal(r.json.inbox, "Received");
+  assert.equal(r.json.inbox, "received");
   assert.deepEqual(r.json.change_notifications[0], {
     id: 5501, contract_id: 9001, job_id: 7001, gc: "Turner Construction", gc_reference: "CN-22",
     type: "Pricing Request", title: "Price added rock removal at MH-4",
-    received: "2026-10-01", due_date: due.slice(0, 10), responded: false, overdue: true,
+    date_received: "2026-10-01", due_date: due.slice(0, 10), responded: false, overdue: true,
   });
   assert.equal(r.json.overdue_count, 1);
   assert.doesNotMatch(r.text, /project|customer|RFI/i);
@@ -35,7 +35,7 @@ test("overdue only when the due date has passed and Schreiber has not responded;
   assert.deepEqual([1, 2, 3, 4].map((i) => by[i].overdue), [true, false, false, false]);
   assert.equal(r.json.overdue_count, 1);
   assert.equal(by[3].responded, true);
-  assert.deepEqual(by[3].cor, { number: "COR-014", title: "Extra rock excavation", status: "In Review", total: 18450.56, submitted: "2026-10-05" });
+  assert.deepEqual(by[3].cor, { cor_number: "COR-014", title: "Extra rock excavation", status: "In Review", total: 18450.56, date_submitted: "2026-10-05" });
   assert.equal(by[1].cor, undefined);
 });
 
@@ -48,20 +48,19 @@ test("a Void (rejected) linked COR is shown as Void, Waived noted", async () => 
   assert.equal(r.json.change_notifications[0].cor.void_kind, "Waived");
 });
 
-test("filters: type, Job (by job number), due and submitted ranges sent to Clearstory as UTC", async () => {
+test("filters: type, due and submitted ranges sent to Clearstory as UTC", async () => {
   const h = await harness({
     "GET /projects": envelope([{ id: 7001, jobNumber: "23104", projectTitle: "Route 30 Sewer Extension" }]),
     "GET /change-notifications": envelope([]),
   });
   const r = await h.call("list_change_notifications", {
-    type: "Authorize T&M Work", job: "23104",
+    type: "Authorize T&M Work",
     due_from: "2026-10-01", due_until: "2026-10-31", submitted_from: "2026-09-01", submitted_until: "2026-09-30",
   });
   assert.equal(r.isError, false, r.text);
   const p = new URL(h.apiCalls().find((c) => c.url.includes("/change-notifications"))!.url).searchParams;
   assert.equal(p.get("inbox"), "received");
   assert.equal(p.get("types"), "authorize_tm_work");
-  assert.equal(p.get("projectIds"), "7001");
   assert.equal(p.get("fromDueDate"), "2026-10-01T00:00:00.000Z");
   assert.equal(p.get("untilDueDate"), "2026-10-31T23:59:59.999Z");
   assert.equal(p.get("fromDateSubmitted"), "2026-09-01T00:00:00.000Z");
@@ -81,7 +80,7 @@ test("bad dates are rejected naming the field, before any Clearstory call", asyn
 
 test("Sent inbox lists Change Notifications Schreiber sent, with responses counted toward overdue", async () => {
   const h = await harness({ "GET /change-notifications": envelope([cnSent()]) });
-  const r = await h.call("list_change_notifications", { inbox: "Sent" });
+  const r = await h.call("list_change_notifications", { inbox: "sent" });
   assert.equal(r.isError, false, r.text);
   assert.equal(q(h).get("inbox"), "sent");
   const c = r.json.change_notifications[0];
@@ -106,23 +105,66 @@ test("get_change_notification (Received) reads the contract view and shows the l
   assert.equal(r.json.responded, true);
   assert.equal(r.json.overdue, false);
   assert.equal(r.json.cor.status, "Approved CO Issued");
-  assert.equal(r.json.cor.co_issued, "2026-10-20");
+  assert.equal(r.json.cor.co_issue_date, "2026-10-20");
   assert.doesNotMatch(r.text, /project|customer|RFI/i);
 });
 
-test("get_change_notification (Received) without contract_id explains where to find it", async () => {
-  const h = await harness({});
+test("get_change_notification (Received) without contract_id looks the contract up in the Received list", async () => {
+  const h = await harness({
+    "GET /change-notifications": envelope([cnReceived({ contractId: 9002 }, { id: 4400 }), cnReceived({ contractId: 9001 }, { id: 5501 })]),
+    "GET /change-notifications/5501/9001": cnReceived(),
+  });
+  const r = await h.call("get_change_notification", { id: 5501 });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.contract_id, 9001);
+  assert.equal(new URL(h.apiCalls()[0].url).searchParams.get("inbox"), "received");
+});
+
+test("get_change_notification (Received) without contract_id: unknown id errors pointing to list_change_notifications", async () => {
+  const h = await harness({ "GET /change-notifications": envelope([cnReceived({}, { id: 4400 })]) });
   const r = await h.call("get_change_notification", { id: 5501 });
   assert.equal(r.isError, true);
-  assert.match(r.text, /contract_id.*list_change_notifications/);
-  assert.equal(h.apiCalls().length, 0);
+  assert.match(r.text, /5501.*list_change_notifications/);
 });
 
 test("get_change_notification (Sent) shows each sub's reply and COR", async () => {
   const h = await harness({ "GET /change-notifications/6601": cnSent() });
-  const r = await h.call("get_change_notification", { id: 6601, inbox: "Sent" });
+  const r = await h.call("get_change_notification", { id: 6601, inbox: "sent" });
   assert.equal(r.isError, false, r.text);
   assert.equal(r.json.overdue, true);
   assert.deepEqual(r.json.replies.map((x: { contract_id: number; responded: boolean }) => [x.contract_id, x.responded]), [[9101, true], [9102, false]]);
-  assert.equal(r.json.replies[0].cor.number, "P-3");
+  assert.equal(r.json.replies[0].cor.cor_number, "P-3");
+});
+
+test("Received for a Job: filtered by the Job's contracts (Clearstory's projectId is the GC's), not by projectIds", async () => {
+  const h = await harness({
+    "GET /projects": envelope([{ id: 7001, jobNumber: "23104", projectTitle: "Route 30 Sewer Extension" }]),
+    "GET /contracts": (req: { url: URL }) => req.url.searchParams.get("projectId") === "7001"
+      ? envelope([contractDetail({ id: 9001 }), contractDetail({ id: 9002, name: "Storm Addendum" })]) : envelope([]),
+    "GET /change-notifications": envelope([
+      cnReceived({ contractId: 9001, projectId: 6001 }, { id: 1 }),
+      cnReceived({ contractId: 9555, projectId: 6555 }, { id: 2 }),
+      cnReceived({ contractId: 9002, projectId: 6001 }, { id: 3 }),
+    ]),
+  });
+  const r = await h.call("list_change_notifications", { job: "23104" });
+  assert.equal(r.isError, false, r.text);
+  const p = new URL(h.apiCalls().find((c) => c.url.includes("/change-notifications"))!.url).searchParams;
+  assert.equal(p.get("projectIds"), null, "Schreiber's Job id is not the GC's projectId");
+  assert.deepEqual(r.json.change_notifications.map((c: { id: number }) => c.id), [1, 3]);
+  assert.equal(r.json.total_matching, 2);
+});
+
+test("Sent for a Job filters by Schreiber's Job id", async () => {
+  const h = await harness({ "GET /change-notifications": envelope([cnSent()]) });
+  const r = await h.call("list_change_notifications", { inbox: "sent", job_id: 7001 });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(q(h).get("projectIds"), "7001");
+});
+
+test("inbox is lowercase like the other tools", async () => {
+  const h = await harness({ "GET /change-notifications": envelope([]) });
+  const r = await h.call("list_change_notifications", { inbox: "Sent" });
+  assert.equal(r.isError, true);
+  assert.equal(h.apiCalls().length, 0);
 });
