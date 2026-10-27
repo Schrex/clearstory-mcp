@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ClearstoryClient } from "./clearstory.js";
 import type { Config } from "./config.js";
+import { registerSummaryTools } from "./tools/summary.js";
 import { registerCompanyTools } from "./tools/company.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerNotificationTools } from "./tools/notifications.js";
@@ -16,6 +17,7 @@ const MODULES: ((t: ToolContext) => void)[] = [
   registerNotificationTools,
   registerTagTools,
   registerCorTools,
+  registerSummaryTools,
 ];
 
 /** All tools are read-only: every Clearstory call goes through ClearstoryClient's GET-only guard. */
