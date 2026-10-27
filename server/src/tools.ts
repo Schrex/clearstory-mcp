@@ -2,12 +2,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ClearstoryClient } from "./clearstory.js";
 import type { Config } from "./config.js";
 import { registerCompanyTools } from "./tools/company.js";
+import { registerJobTools } from "./tools/jobs.js";
 
 /** What each tool module gets. Add a module under src/tools/ and list its register function below. */
 export interface ToolContext { server: McpServer; cs: ClearstoryClient; cfg: Config }
 
 const MODULES: ((t: ToolContext) => void)[] = [
   registerCompanyTools,
+  registerJobTools,
 ];
 
 /** All tools are read-only: every Clearstory call goes through ClearstoryClient's GET-only guard. */

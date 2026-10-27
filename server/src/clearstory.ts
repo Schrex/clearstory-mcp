@@ -15,6 +15,11 @@ const TOKEN_SKEW_MS = 5 * 60_000; // treat the token as expired 5 min early
 
 /** Thrown for any non-GET API call, before anything is sent (ADR 0001). */
 export class ReadOnlyError extends Error {}
+/** Thrown when this invocation's subrequest budget (Workers free plan) is spent. Pagers turn it into scope: partial. */
+export class BudgetError extends Error {}
+
+const MAX_TRIES = 4;
+const MAX_WAIT_MS = 30_000;
 
 type TokenEntry = { token: string; exp: number };
 
@@ -29,6 +34,17 @@ export class ClearstoryClient {
   private readonly fetchFn: FetchFn;
   readonly sleep: (ms: number) => Promise<void>;
   private token?: TokenEntry;
+  /** Subrequests (token POST + every GET attempt) sent by this instance. */
+  used = 0;
+
+  /** Clearstory page size for list endpoints (1-100). */
+  get pageSize() { return this.cfg.pageSize; }
+
+  /** Count one subrequest against the budget; throws BudgetError (before sending) once it is spent. */
+  private spend() {
+    if (this.used >= this.cfg.maxSubrequests) throw new BudgetError(`Clearstory request limit (${this.cfg.maxSubrequests} per call) reached.`);
+    this.used++;
+  }
 
   constructor(cfg: Config, kv: KVNamespace, deps: ClientDeps = {}) {
     this.cfg = cfg;
@@ -53,10 +69,27 @@ export class ClearstoryClient {
     try { return JSON.parse(text) as T; } catch { throw new Error(`Clearstory returned non-JSON for GET ${path} (HTTP ${res.status})`); }
   }
 
-  /** One GET attempt with the bearer token. Seam for retry/backoff and budget (ticket #2). */
+  /**
+   * GET with the bearer token, up to 4 tries: 429 and 5xx wait for Retry-After (else 1 s, 2 s, 4 s; capped at 30 s);
+   * a 401 drops the cached token and retries once with a new one. Every attempt counts against the budget.
+   */
   protected async send(url: string): Promise<Response> {
-    const token = await this.accessToken();
-    return this.fetchFn(url, { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "application/json", Authorization: `Bearer ${token}` } });
+    let refreshed = false;
+    for (let attempt = 1; ; attempt++) {
+      const token = await this.accessToken();
+      this.spend();
+      const res = await this.fetchFn(url, { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "application/json", Authorization: `Bearer ${token}` } });
+      if (attempt >= MAX_TRIES) return res;
+      if (res.status === 401 && !refreshed) {
+        refreshed = true;
+        this.token = undefined;
+        await this.kv.delete(TOKEN_KV_KEY);
+        continue;
+      }
+      if (res.status !== 429 && res.status < 500) return res;
+      const after = Number(res.headers.get("Retry-After"));
+      await this.sleep(Math.min(MAX_WAIT_MS, res.headers.has("Retry-After") && Number.isFinite(after) && after >= 0 ? after * 1000 : 1000 * 2 ** (attempt - 1)));
+    }
   }
 
   private url(path: string, query: Query): string {
@@ -81,6 +114,7 @@ export class ClearstoryClient {
       client_secret: this.cfg.clientSecret,
       audience: this.cfg.audience,
     });
+    this.spend();
     const res = await this.fetchFn(this.cfg.tokenUrl, {
       method: "POST",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },

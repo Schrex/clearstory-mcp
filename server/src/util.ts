@@ -11,3 +11,16 @@ export const pick = (r: Rec, keys: string[]) => {
   for (const k of keys) if (r[k] !== undefined && r[k] !== null && r[k] !== "") o[k] = r[k];
   return o;
 };
+/** Drop null/undefined/"" values (keeps false and 0). */
+export const compact = (r: Rec) => pick(r, Object.keys(r));
+
+const num = (v: unknown): number | undefined => {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+};
+/** Dollars: 2 dp. Non-numbers → undefined (so pick/compact drops them). */
+export const money = (v: unknown) => { const n = num(v); return n === undefined ? undefined : Math.round(n * 100) / 100; };
+/** Hours / quantities: 4 dp. */
+export const hours = (v: unknown) => { const n = num(v); return n === undefined ? undefined : Math.round(n * 1e4) / 1e4; };
+/** ISO timestamp → YYYY-MM-DD (the date as Clearstory stored it, UTC). */
+export const day = (v: unknown) => (typeof v === "string" && v.length >= 10 ? v.slice(0, 10) : undefined);
