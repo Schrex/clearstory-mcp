@@ -54,7 +54,7 @@ v0.1: Claude joins the two connectors (decided, [ADR 0002](docs/adr/0002-separat
 - Match to T&M Tags by `hcssTimecardId` (certain); fallback Job + work date + cost code = **probable**, never certain.
 - Report by stage: Untagged → Unsigned → Signed, not on a COR → On a COR, not approved.
 - Default window: last 60 days of work dates; per-Job pull recommended.
-- `list_tm_tags` must return `hcssTimecardId`, `costCode`, `dateOfWorkPerformed`, status; `list_cors` with `hasTags=1` must return each COR's tag ids so "Signed, not on a COR" is computable. (UNVERIFIED that `tmTags[]` on CORs lists every linked tag; check with a real token.)
+- `list_tm_tags` must return `hcss_timecard_id` (Clearstory `hcssTimecardId`), cost code, work date, status, and take a `work_date_from`/`work_date_until` window (main or additional work dates); `list_cors` with `hasTags=1` must return each COR's tag ids so "Signed, not on a COR" is computable. (UNVERIFIED that `tmTags[]` on CORs lists every linked tag; check with a real token.)
 - Priority 2: COR aging / Exposure. Priority 3: reporting/export (v0.2).
 
 ## Lessons applied from HeavyJob
@@ -69,8 +69,10 @@ Accept job **number** as well as id; trimmed codes; compact default records with
 - Single user (Sumanth) in `ALLOWED_USER_EMAIL`; add PMs by email later.
 - Read-only v0.1 ([ADR 0001](docs/adr/0001-read-only-enforced-in-server.md)).
 - Schreiber is mainly a sub: default inbox `sent`.
-- Believed true (user's best knowledge, verify on first token): Professional plan; HeavyJob → Clearstory T&M integration on; job numbers equal HeavyJob job codes.
+- Confirmed in Clearstory settings 2026-10-27: plan **Professional**, company type **Subcontractor**.
+- Web API Application `Schreiber Claude MCP` created 2026-10-27 by Sumanth; `CLEARSTORY_CLIENT_ID` / `CLEARSTORY_CLIENT_SECRET` set as Worker secrets.
+- Believed true (verify on first token): HeavyJob → Clearstory T&M integration on; job numbers equal HeavyJob job codes.
 
 ## Open
-1. **Account Owner unknown.** Sumanth to find them and have them create Web API Application `Schreiber Claude MCP`. Build can start; testing is blocked until then.
+1. Deploy: real KV namespace id in wrangler.toml; secrets `ALLOWED_USER_EMAIL`, `ACCESS_PASSWORD_HASH`, `TOKEN_EPOCH`; then live check (#8).
 2. Verify with a real token: `/cors/overview` and `contract-summary` shapes, COR `tmTags[]` completeness, actual rate limits.

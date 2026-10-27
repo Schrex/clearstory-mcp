@@ -1,0 +1,24 @@
+# Cloudflare Workers FREE plan. Secrets are set with `wrangler secret put`, NEVER in this file.
+name = "schrex-clearstory-mcp"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+# Lets the OAuth library accept Client ID Metadata Document clients (it logs a notice without it). DCR works either way.
+compatibility_flags = ["global_fetch_strictly_public"]
+workers_dev = true
+
+[vars]
+ALLOWED_CIDRS = "160.79.104.0/21"     # applied to /mcp only (Anthropic egress)
+CLEARSTORY_MAX_SUBREQUESTS = "45"     # free plan allows 50 per request; token + every page count
+PUBLIC_ORIGIN = "https://schrex-clearstory-mcp.schrex.workers.dev"   # canonical OAuth resource = PUBLIC_ORIGIN + /mcp
+# Optional overrides: CLEARSTORY_PAGE_SIZE (1-100, default 100), CLEARSTORY_API_BASE, CLEARSTORY_TOKEN_URL
+
+# Create with `npx wrangler kv namespace create OAUTH_KV` and paste the id below (placeholder until first deploy).
+[[kv_namespaces]]
+binding = "OAUTH_KV"   # OAuth clients/grants/hashed tokens + login throttle counters (authfail:*) + Clearstory token (cs:token)
+id = "00000000000000000000000000000000"
+
+# Secrets (set once each with `npx wrangler secret put NAME`; values never committed):
+#   CLEARSTORY_CLIENT_ID, CLEARSTORY_CLIENT_SECRET   Clearstory Web API Application "Schreiber Claude MCP"
+#   ALLOWED_USER_EMAIL     comma-separated allowlist
+#   ACCESS_PASSWORD_HASH   pbkdf2$30000$<salt_b64>$<hash_b64>  (see HeavyJob setup-guide.md step 8 for the one-liner)
+#   TOKEN_EPOCH            any string; change it to revoke every session
