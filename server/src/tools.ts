@@ -3,6 +3,7 @@ import type { ClearstoryClient } from "./clearstory.js";
 import type { Config } from "./config.js";
 import { registerCompanyTools } from "./tools/company.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerCorTools } from "./tools/cors.js";
 
 /** What each tool module gets. Add a module under src/tools/ and list its register function below. */
 export interface ToolContext { server: McpServer; cs: ClearstoryClient; cfg: Config }
@@ -10,6 +11,7 @@ export interface ToolContext { server: McpServer; cs: ClearstoryClient; cfg: Con
 const MODULES: ((t: ToolContext) => void)[] = [
   registerCompanyTools,
   registerJobTools,
+  registerCorTools,
 ];
 
 /** All tools are read-only: every Clearstory call goes through ClearstoryClient's GET-only guard. */
