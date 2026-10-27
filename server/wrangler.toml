@@ -15,7 +15,7 @@ PUBLIC_ORIGIN = "https://schrex-clearstory-mcp.schrex.workers.dev"   # canonical
 # Create with `npx wrangler kv namespace create OAUTH_KV` and paste the id below (placeholder until first deploy).
 [[kv_namespaces]]
 binding = "OAUTH_KV"   # OAuth clients/grants/hashed tokens + login throttle counters (authfail:*) + Clearstory token (cs:token)
-id = "00000000000000000000000000000000"
+id = "16a355d864244bbd929fdbf39e4fcf68"
 
 # Secrets (set once each with `npx wrangler secret put NAME`; values never committed):
 #   CLEARSTORY_CLIENT_ID, CLEARSTORY_CLIENT_SECRET   Clearstory Web API Application "Schreiber Claude MCP"
