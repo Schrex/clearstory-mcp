@@ -13,14 +13,20 @@ export function ctEqual(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
   return diff === 0;
 }
-/** Constant-time check that email is in the allowlist (compares SHA-256 digests, checks every entry). */
+/**
+ * Constant-time check that email is in the allowlist (compares SHA-256 digests, checks every entry).
+ * An entry starting with "@" (e.g. "@schrex.com") allows any address at that domain; the email is not verified, so the password is the real gate.
+ */
 export async function emailAllowed(env: Env, email: string): Promise<boolean> {
   const list = allowedEmails(env);
-  if (!list.length || !email) return false;
-  const h = async (s: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s.trim().toLowerCase())));
-  const mine = await h(email);
+  const addr = email.trim().toLowerCase();
+  const at = addr.lastIndexOf("@");
+  if (!list.length || at < 1) return false;
+  const domain = addr.slice(at);
+  const h = async (s: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s)));
+  const mine = await h(addr), mineDomain = await h(domain);
   let ok = false;
-  for (const e of list) ok = ctEqual(mine, await h(e)) || ok;
+  for (const e of list) ok = ctEqual(e.startsWith("@") ? mineDomain : mine, await h(e)) || ok;
   return ok;
 }
 

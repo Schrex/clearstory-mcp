@@ -4,7 +4,7 @@ import { emailAllowed, handleAuthorize, type AuthProps } from "./auth.js";
 import { createMcpHandler } from "./mcp.js";
 
 const ACCESS_TTL_S = 60 * 60;            // 1 h access tokens
-const REFRESH_TTL_S = 14 * 24 * 60 * 60; // grant (refresh) lives 14 days from sign-in, then sign in again
+const REFRESH_TTL_S = 365 * 24 * 60 * 60; // grant (refresh) lives 1 year from sign-in, then sign in again; rotate TOKEN_EPOCH to revoke sooner
 
 const mcpHandler = createMcpHandler();
 

@@ -19,6 +19,6 @@ id = "16a355d864244bbd929fdbf39e4fcf68"
 
 # Secrets (set once each with `npx wrangler secret put NAME`; values never committed):
 #   CLEARSTORY_CLIENT_ID, CLEARSTORY_CLIENT_SECRET   Clearstory Web API Application "Schreiber Claude MCP"
-#   ALLOWED_USER_EMAIL     comma-separated allowlist
+#   ALLOWED_USER_EMAIL     comma-separated allowlist; "@schrex.com" admits the whole domain (shared team password)
 #   ACCESS_PASSWORD_HASH   pbkdf2$30000$<salt_b64>$<hash_b64>  (see HeavyJob setup-guide.md step 8 for the one-liner)
 #   TOKEN_EPOCH            any string; change it to revoke every session

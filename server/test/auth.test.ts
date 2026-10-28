@@ -64,6 +64,15 @@ test("sign-in refuses an email that is not on the allowlist", async () => {
   assert.equal(completed.length, 0);
 });
 
+test("an @domain allowlist entry admits any address at that domain, and only that domain", async () => {
+  const { env, completed } = await makeEnv({ ALLOWED_USER_EMAIL: "@schrex.com" });
+  assert.equal((await signIn(env, "PM@Schrex.com", PASSWORD)).status, 302);
+  assert.deepEqual(completed[0].props, { email: "pm@schrex.com", epoch: "epoch-1" });
+  for (const bad of ["pm@notschrex.com", "pm@schrex.com.evil.io", "@schrex.com", "schrex.com"]) {
+    assert.equal((await signIn(env, bad, PASSWORD, "198.51.100.1")).status, 401, bad);
+  }
+});
+
 test("sign-in refuses a wrong password", async () => {
   const { env, completed } = await makeEnv();
   const res = await signIn(env, EMAIL, "wrong password");

@@ -1,6 +1,6 @@
 # Clearstory connector for Claude Team: design (v0.1 proposal, 2026-10-27)
 
-Read-only MCP server for Clearstory (change orders, T&M tags), built the same way as `../hcss-heavyjob-mcp`: Cloudflare Workers **Free** plan, stateless Streamable HTTP, OAuth 2.1 single-user sign-in (`@cloudflare/workers-oauth-provider`), `ALLOWED_USER_EMAIL` + PBKDF2 password, `TOKEN_EPOCH` revoke, Anthropic IP allowlist on `/mcp`, one-time KV export links. Worker name proposal: `schrex-clearstory-mcp`.
+Read-only MCP server for Clearstory (change orders, T&M tags), built the same way as `../hcss-heavyjob-mcp`: Cloudflare Workers **Free** plan, stateless Streamable HTTP, OAuth 2.1 team sign-in (`@cloudflare/workers-oauth-provider`), `ALLOWED_USER_EMAIL` + PBKDF2 password, `TOKEN_EPOCH` revoke, Anthropic IP allowlist on `/mcp`, one-time KV export links. Worker name proposal: `schrex-clearstory-mcp`.
 
 Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clearstory/docs/swagger.json (Redoc UI at `/clearstory/docs`), fetched 2026-10-27, copy in [reference/](reference/clearstory-swagger-2026-10-27.json). Help center: https://knowledge.clearstory.build/using-the-clearstory-api and https://knowledge.clearstory.build/move-to-the-new-clearstory-api. No endpoint below is invented.
 
@@ -66,7 +66,7 @@ Accept job **number** as well as id; trimmed codes; compact default records with
 - **429:** honor `Retry-After`, ≤4 tries, sequential paging.
 
 ## Decided (2026-10-27)
-- Single user (Sumanth) in `ALLOWED_USER_EMAIL`; add PMs by email later.
+- Team access (2026-10-27): `ALLOWED_USER_EMAIL=@schrex.com` (any schrex.com address) + one shared team password; sign-in lasts 1 year (refresh TTL). Email is not verified, so the password is the gate. Revoke everyone: rotate `TOKEN_EPOCH` (+ password via `scripts/set-password.sh`).
 - Read-only v0.1 ([ADR 0001](docs/adr/0001-read-only-enforced-in-server.md)).
 - Schreiber is mainly a sub: default inbox `sent`.
 - Confirmed in Clearstory settings 2026-10-27: plan **Professional**, company type **Subcontractor**.
