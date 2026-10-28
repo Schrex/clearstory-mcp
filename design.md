@@ -66,7 +66,7 @@ Accept job **number** as well as id; trimmed codes; compact default records with
 - **429:** honor `Retry-After`, ≤4 tries, sequential paging.
 
 ## Decided (2026-10-27)
-- Team access (2026-10-27): `ALLOWED_USER_EMAIL=@schrex.com` (any schrex.com address) + one shared team password; sign-in lasts 1 year (refresh TTL). Email is not verified, so the password is the gate. Revoke everyone: rotate `TOKEN_EPOCH` (+ password via `scripts/set-password.sh`).
+- Team access (2026-10-28): `ALLOWED_USER_EMAIL` = the same 6 named @schrex.com emails as HeavyJob (zach, dave, prasad, ryan, sumanth, jeri) + one shared team password (Bitwarden item "ClearStory MCP connector", "HCSS Connectors" collection); sign-in lasts 90 days (refresh TTL), access tokens 1 h. Email is not verified, so the password is the gate. Revoke everyone: rotate `TOKEN_EPOCH` (+ password via `scripts/set-password.sh`). Changing the password alone signs no one out.
 - Read-only v0.1 ([ADR 0001](docs/adr/0001-read-only-enforced-in-server.md)).
 - Schreiber is mainly a sub: default inbox `sent`.
 - Confirmed in Clearstory settings 2026-10-27: plan **Professional**, company type **Subcontractor**.
