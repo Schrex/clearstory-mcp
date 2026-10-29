@@ -51,7 +51,8 @@ export const tokenResponse = (token = "tok-1", expiresIn = 86400) =>
   json({ access_token: token, token_type: "Bearer", expires_in: expiresIn });
 
 /** Fake fetch: token POST answered by `token` (default: a fresh 24 h token), API paths by `routes`, else 404. */
-export function fakeFetch(routes: Routes, cfg: Config = TEST_CFG, token: () => Response = () => tokenResponse()) {
+/** `global: false` keeps the requests out of `allRequests` (write tests assert their own requests). */
+export function fakeFetch(routes: Routes, cfg: Config = TEST_CFG, token: () => Response = () => tokenResponse(), global = true) {
   const calls: Recorded[] = [];
   const fetch: FetchFn = async (input, init = {}) => {
     const url = new URL(String(input));
@@ -60,7 +61,7 @@ export function fakeFetch(routes: Routes, cfg: Config = TEST_CFG, token: () => R
     const body = init.body === undefined || init.body === null ? undefined : String(init.body);
     const rec = { method, url: url.toString(), headers, body };
     calls.push(rec);
-    allRequests.push(rec);
+    if (global) allRequests.push(rec);
     if (url.toString() === cfg.tokenUrl) return token();
     const path = url.pathname.startsWith(new URL(cfg.apiBase).pathname)
       ? url.pathname.slice(new URL(cfg.apiBase).pathname.length) : url.pathname;
@@ -78,12 +79,14 @@ export interface HarnessOpts {
   kv?: FakeKv;
   token?: () => Response;
   sleep?: (ms: number) => Promise<void>;
+  /** Draft-COR write tests (ADR 0003): keep this harness's requests out of the suite-wide read-only check. */
+  writes?: boolean;
 }
 
 export async function harness(routes: Routes = {}, opts: HarnessOpts = {}) {
   const cfg = { ...TEST_CFG, ...opts.cfg };
   const kv = opts.kv ?? fakeKv();
-  const { fetch, calls } = fakeFetch(routes, cfg, opts.token);
+  const { fetch, calls } = fakeFetch(routes, cfg, opts.token, !opts.writes);
   const cs = new ClearstoryClient(cfg, kv.kv, { fetch, sleep: opts.sleep ?? (async () => {}) });
   const server = buildServer(cfg, cs);
   const [a, b] = InMemoryTransport.createLinkedPair();
