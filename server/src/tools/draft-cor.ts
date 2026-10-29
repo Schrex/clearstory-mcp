@@ -5,8 +5,9 @@ import type { ToolContext } from "../tools.js";
 import { jobArgs, resolveJob } from "../jobs.js";
 import { pullAll } from "../paging.js";
 import { corStatus } from "../cors.js";
+import { localDay } from "../dates.js";
 import { WriteOutcomeUnknownError, WriteRefusedError, type ClearstoryClient, type CreatedCor } from "../clearstory.js";
-import { compact, day, money, reply, type Rec } from "../util.js";
+import { compact, day, money, reply, usd, type Rec } from "../util.js";
 
 export const PREVIEW_TTL_S = 15 * 60;
 /** Audit records (cor-audit:<ISO time>:<preview_id>, plus :<evt> for create outcomes) kept ~13 months. */
@@ -47,12 +48,12 @@ async function audit(kv: KVNamespace, rec: { evt: string; preview_id: string; at
 }
 
 /**
- * After an unknown outcome: one GET /cors on the Job by title for a same-title COR created in the last few minutes.
+ * After an unknown outcome: exactly one GET /cors (no retries) on the Job by title for a same-title COR created in the last few minutes.
  * Never throws (drafts may not be listed, and the lookup itself can fail).
  */
 async function findJustCreated(cs: ClearstoryClient, projectId: number, title: string, at: Date): Promise<Rec | undefined> {
   try {
-    const page = await cs.get<{ records?: Rec[] }>("/cors", {
+    const page = await cs.getOnce<{ records?: Rec[] }>("/cors", {
       inbox: "sent", projectIds: projectId, searchTitle: title, includeFromArchivedProjects: true,
       sortBy: "createdAt", sortDirection: "desc", limit: 25,
     });
@@ -63,8 +64,6 @@ async function findJustCreated(cs: ClearstoryClient, projectId: number, title: s
     return undefined;
   }
 }
-
-const usd = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext) {
   const now = session.now ?? (() => new Date());
@@ -93,7 +92,11 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       // No contractId on create: Clearstory picks the contract itself.
       const contracts = (await pullAll<Rec>(cs, { path: "/contracts", query: { projectId, withProjects: true } })).records;
       if (!contracts.length) throw new Error(`Job ${jobNumber} has no contract in Clearstory, so a COR can't be drafted on it. Add the contract in Clearstory first.`);
-      if (contracts.length > 1) warnings.push(`Job ${jobNumber} has ${contracts.length} contracts (${contracts.map((c) => `${c.id} ${c.name ?? ""}`.trim()).join("; ")}). Clearstory chooses which one the draft COR goes on; check it in Clearstory.`);
+      const contractGc = (c: Rec) => ((c.contractorProject as Rec | undefined)?.customer ?? job.customer) as string | undefined;
+      if (contracts.length > 1) {
+        const list = contracts.map((c) => `${`${c.id} ${c.name ?? ""}`.trim()}${contractGc(c) ? ` (GC ${contractGc(c)})` : ""}`).join("; ");
+        warnings.push(`Job ${jobNumber} has ${contracts.length} contracts: ${list}. Clearstory picks which contract the draft COR goes on (it can't be chosen here); check it in Clearstory.`);
+      }
       // Duplicates (warnings): every COR on the Job, all statuses incl. Void, then our own ledger (drafts may not be listed).
       const want = normalizeTitle(title);
       const cors = await pullAll<Rec>(cs, { path: "/cors", query: { inbox: "sent", projectIds: projectId, includeFromArchivedProjects: true } });
@@ -113,10 +116,11 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           : `Possible duplicate: a draft COR with this title was already created via Claude on this Job${info ? ` (${info})` : ""}. It may not show in Clearstory's COR list until sent.`);
       }
       const t = now();
-      const footer = [`Drafted via Claude by ${session.email} on ${t.toISOString().slice(0, 10)}.`, a.source?.trim() ? `Source: ${a.source.trim()}` : ""].filter(Boolean).join("\n");
+      const footer = [`Drafted via Claude by ${session.email} on ${localDay(t)}.`, a.source?.trim() ? `Source: ${a.source.trim()}` : ""].filter(Boolean).join("\n");
       const description = `${a.description.trim()}\n\n${footer}`;
       const previewId = crypto.randomUUID();
-      const gc = ((contracts[0]?.contractorProject as Rec | undefined)?.customer ?? job.customer) as string | undefined;
+      // One contract: its GC. Several: the Job's GC (Clearstory picks the contract; see the warning).
+      const gc = contracts.length === 1 ? contractGc(contracts[0]) : job.customer as string | undefined;
       const stored: StoredPreview = {
         body: { projectId, title, description, amount },
         job_number: jobNumber,
@@ -153,7 +157,12 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       const t = now();
       const at = t.toISOString();
       const base = { email: session.email, job: p.job_number, amount: p.body.amount };
-      const ledgerKey = createdKey(p.body.projectId, p.body.title);
+      /** Ledger entry for this Job and title (duplicate check in later previews). */
+      const record = async (e: Pick<CreatedDraft, "state" | "cor_id" | "cor_number">) => {
+        const entry: CreatedDraft = { ...e, email: session.email, created_at: at };
+        await session.kv.put(createdKey(p.body.projectId, p.body.title), JSON.stringify(entry), { expirationTtl: LEDGER_TTL_S });
+        return entry;
+      };
       let cor: CreatedCor;
       try {
         cor = await cs.createDraftCor(p.body);
@@ -165,8 +174,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         if (!(e instanceof WriteOutcomeUnknownError)) throw e;
         // No retry (no idempotency key). One lookup, then the user checks Clearstory.
         const found = await findJustCreated(cs, p.body.projectId, p.body.title, t);
-        const entry: CreatedDraft = { state: "unknown", cor_id: found?.id as number | undefined, cor_number: found?.corNumber as string | undefined, email: session.email, created_at: at };
-        await session.kv.put(ledgerKey, JSON.stringify(entry), { expirationTtl: LEDGER_TTL_S });
+        const entry = await record({ state: "unknown", cor_id: found?.id as number | undefined, cor_number: found?.corNumber as string | undefined });
         await audit(session.kv, { evt: "cor_unknown", ...base, ...compact({ cor_id: entry.cor_id, cor_number: entry.cor_number }), preview_id, at });
         return reply(compact({
           state: "unknown",
@@ -175,8 +183,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           job_number: p.job_number,
         }));
       }
-      const entry: CreatedDraft = { state: "created", cor_id: cor.id, cor_number: cor.corNumber, email: session.email, created_at: at };
-      await session.kv.put(ledgerKey, JSON.stringify(entry), { expirationTtl: LEDGER_TTL_S });
+      await record({ state: "created", cor_id: cor.id, cor_number: cor.corNumber });
       await audit(session.kv, { evt: "cor_created", ...base, cor_id: cor.id, cor_number: cor.corNumber, preview_id, at });
       return reply(compact({
         state: "created", cor_id: cor.id, cor_number: cor.corNumber, status: corStatus(cor.status),

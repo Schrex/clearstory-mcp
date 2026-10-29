@@ -16,6 +16,9 @@ _Avoid_: Customer, client
 Schreiber's priced request to a GC for payment for changed or extra work. It is revised as a chain; only the latest revision counts.
 _Avoid_: Change order, CO, PCO
 
+**Draft COR**:
+A COR created in Clearstory but not yet sent to the GC. Drafts created through the API are lump-sum uploaded CORs: a title, a total and a description, with no line items.
+
 **Change Order**:
 A COR the GC has approved and formally issued (status Approved CO Issued).
 _Avoid_: Using it for an unapproved COR

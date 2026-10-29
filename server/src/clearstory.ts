@@ -44,6 +44,10 @@ export interface CreatedCor {
 
 type TokenEntry = { token: string; exp: number };
 
+/** Error-body excerpt for messages: whitespace collapsed, max 500 chars. */
+const clip = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 500);
+const CHECK_FIRST = "Check Clearstory before trying again.";
+
 /**
  * Read-only Clearstory client, plus one write: creating a draft COR (ADR 0003).
  * Create one per Worker invocation: state (token, subrequest count) is per instance.
@@ -80,6 +84,11 @@ export class ClearstoryClient {
     return this.request<T>("GET", path, query);
   }
 
+  /** GET with a single attempt: no 401 refresh, no 429/5xx retries (e.g. the one lookup after an unknown create outcome). */
+  async getOnce<T = unknown>(path: string, query: Query = {}): Promise<T> {
+    return this.parseGet<T>(path, await this.send(this.url(path, query), undefined, 1));
+  }
+
   /**
    * Create a draft COR: one POST /cors. Returns the created COR; throws WriteRefusedError (not created),
    * WriteOutcomeUnknownError (may exist: check Clearstory), or a plain Error before anything was sent.
@@ -96,10 +105,12 @@ export class ClearstoryClient {
       if (!ALLOWED_WRITES.has(`${m} ${path}`) || hasQuery || body === undefined) throw new ReadOnlyError(`Clearstory connector is read-only: ${method} ${path} refused.`);
       return this.write<T>(m, path, body);
     }
-    const url = this.url(path, query);
-    const res = await this.send(url);
+    return this.parseGet<T>(path, await this.send(this.url(path, query)));
+  }
+
+  private async parseGet<T>(path: string, res: Response): Promise<T> {
     const text = await res.text();
-    if (!res.ok) throw new Error(`Clearstory GET ${path} failed: HTTP ${res.status} - ${text.replace(/\s+/g, " ").trim().slice(0, 500)}`);
+    if (!res.ok) throw new Error(`Clearstory GET ${path} failed: HTTP ${res.status} - ${clip(text)}`);
     if (!text) return undefined as T;
     try { return JSON.parse(text) as T; } catch { throw new Error(`Clearstory returned non-JSON for GET ${path} (HTTP ${res.status})`); }
   }
@@ -108,14 +119,14 @@ export class ClearstoryClient {
   private async write<T>(method: string, path: string, body: unknown): Promise<T> {
     const res = await this.send(this.url(path, {}), { method, body: JSON.stringify(body) });
     let text: string;
-    try { text = await res.text(); } catch { throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status} but the answer could not be read. Check Clearstory before trying again.`); }
-    const detail = text.replace(/\s+/g, " ").trim().slice(0, 500);
-    if (res.status >= 500) throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status}, outcome unknown. Check Clearstory before trying again. ${detail}`.trim());
+    try { text = await res.text(); } catch { throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status} but the answer could not be read. ${CHECK_FIRST}`); }
+    const detail = clip(text);
+    if (res.status >= 500) throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status}, outcome unknown. ${CHECK_FIRST} ${detail}`.trim());
     if (!res.ok) throw new WriteRefusedError(`Clearstory refused ${method} ${path}: HTTP ${res.status} - ${detail}`, res.status);
     let out: unknown;
     try { out = JSON.parse(text); } catch { /* handled below */ }
     if (!out || typeof out !== "object" || typeof (out as { id?: unknown }).id !== "number") {
-      throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status} with an unreadable body, outcome unknown. Check Clearstory before trying again.`);
+      throw new WriteOutcomeUnknownError(`Clearstory ${method} ${path}: HTTP ${res.status} with an unreadable body, outcome unknown. ${CHECK_FIRST}`);
     }
     return out as T;
   }
@@ -125,7 +136,7 @@ export class ClearstoryClient {
    * 429 (and 5xx, GET only) wait for Retry-After (else 1 s, 2 s, 4 s; capped at 30 s). Every attempt counts against the budget.
    * A write is never retried once it may have been processed: 5xx, network errors and timeouts throw WriteOutcomeUnknownError.
    */
-  protected async send(url: string, write?: { method: string; body: string }): Promise<Response> {
+  protected async send(url: string, write?: { method: string; body: string }, maxTries = MAX_TRIES): Promise<Response> {
     let refreshed = false;
     for (let attempt = 1; ; attempt++) {
       const token = await this.accessToken();
@@ -137,10 +148,10 @@ export class ClearstoryClient {
         try {
           res = await this.fetchFn(url, { method: write.method, headers: { ...headers, "Content-Type": "application/json" }, body: write.body, signal: AbortSignal.timeout(WRITE_TIMEOUT_MS) });
         } catch (e) {
-          throw new WriteOutcomeUnknownError(`Clearstory ${write.method} ${new URL(url).pathname}: no answer (${(e as Error)?.name ?? "error"}), outcome unknown. Check Clearstory before trying again.`);
+          throw new WriteOutcomeUnknownError(`Clearstory ${write.method} ${new URL(url).pathname}: no answer (${(e as Error)?.name ?? "error"}), outcome unknown. ${CHECK_FIRST}`);
         }
       }
-      if (attempt >= MAX_TRIES) return res;
+      if (attempt >= maxTries) return res;
       if (res.status === 401 && !refreshed) {
         refreshed = true;
         this.token = undefined;
