@@ -27,7 +27,7 @@ const MODULES: ((t: ToolContext) => void)[] = [
   registerSummaryTools,
 ];
 
-/** All tools are read-only: every Clearstory call goes through ClearstoryClient's GET-only guard. */
+/** All tools are read-only except create_draft_cor: every Clearstory call goes through ClearstoryClient's guard (GET, plus only POST /cors; ADR 0003). */
 export function buildServer(cfg: Config, cs: ClearstoryClient, session: Session): McpServer {
   const server = new McpServer({ name: "schrex-clearstory-mcp", version: "0.1.0" });
   for (const register of MODULES) register({ server, cs, cfg, session });

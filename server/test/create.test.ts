@@ -189,6 +189,19 @@ test("outcome unknown: a failing lookup still answers state unknown", async () =
   assert.equal(posts(h).length, 1);
 });
 
+test("outcome unknown: a lookup that gets a 5xx is not retried (exactly one lookup GET) and still answers state unknown", async () => {
+  const h = await setup({
+    "POST /cors": () => json({}, 503),
+    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? json({ message: "down" }, 503) : envelope([]),
+  });
+  const p = await preview(h);
+  const before = h.apiCalls().length;
+  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.state, "unknown");
+  assert.deepEqual(h.apiCalls().slice(before).map((c) => c.method), ["POST", "GET"]);
+});
+
 test("a preview after an unknown outcome warns that a draft with this title may already exist", async () => {
   const h = await setup({ "POST /cors": () => json({}, 500) });
   await h.call("create_draft_cor", { preview_id: (await preview(h)).preview_id });

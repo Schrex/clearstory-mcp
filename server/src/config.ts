@@ -11,8 +11,8 @@ export interface Env {
   CLEARSTORY_PAGE_SIZE?: string;
   CLEARSTORY_MAX_SUBREQUESTS?: string;
   ALLOWED_CIDRS?: string;
-  PUBLIC_ORIGIN?: string;
-  MAX_DRAFT_COR_AMOUNT?: string;     // cap per draft COR (default 250000)            // e.g. https://schrex-clearstory-mcp.schrex.workers.dev
+  PUBLIC_ORIGIN?: string;            // e.g. https://schrex-clearstory-mcp.schrex.workers.dev
+  MAX_DRAFT_COR_AMOUNT?: string;     // cap per draft COR (default 250000)
   OAUTH_KV: KVNamespace;             // OAuth library state + login throttle + cached Clearstory token
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers; // injected by the library
 }

@@ -49,7 +49,7 @@ test("preview_draft_cor refuses missing, zero, negative and over-cap amounts and
     [{ ...ARGS, amount: 0 }, /amount must be more than 0/],
     [{ ...ARGS, amount: 0.004 }, /amount must be more than 0/],
     [{ ...ARGS, amount: -50 }, /Credit \(negative\) CORs are not supported/],
-    [{ ...ARGS, amount: 1000.01 }, /above the \$1,000 limit per draft COR/],
+    [{ ...ARGS, amount: 1000.01 }, /amount \$1,000.01 is above the \$1,000.00 limit per draft COR/],
     [{ ...ARGS, title: "   " }, /title must be 1-255 characters/],
     [{ ...ARGS, title: "x".repeat(256) }, /title must be 1-255 characters/],
   ];
@@ -64,6 +64,13 @@ test("preview_draft_cor refuses missing, zero, negative and over-cap amounts and
   assert.equal(ok.isError, false, ok.text);
 });
 
+test("preview_draft_cor dates the footer in New York local time, not UTC", async () => {
+  const h = await setup({}, { now: () => new Date("2026-10-29T02:00:00Z") });
+  const r = await h.call("preview_draft_cor", ARGS);
+  assert.equal(r.isError, false, r.text);
+  assert.match(r.json.description, /Drafted via Claude by pm@schrex\.com on 2026-10-28\.$/);
+});
+
 test("preview_draft_cor refuses a Job with no contract and stores nothing", async () => {
   const h = await setup({ "GET /contracts": envelope([]) });
   const r = await h.call("preview_draft_cor", ARGS);
@@ -72,17 +79,25 @@ test("preview_draft_cor refuses a Job with no contract and stores nothing", asyn
   assert.equal(h.kv.puts.filter((p) => p.key.startsWith("cor-preview:")).length, 0);
 });
 
-test("preview_draft_cor warns when the Job has several contracts (Clearstory picks one) and names them; GC from the contract", async () => {
-  const h = await setup({ "GET /contracts": envelope([
-    contractDetail({ contractorProject: projectRecord({ customer: "Turner Construction Co." }) }),
-    contractDetail({ id: 9002, name: "Change Work" }),
-  ]) });
+test("preview_draft_cor shows the contract's GC when the Job has exactly one contract", async () => {
+  const h = await setup({ "GET /contracts": envelope([contractDetail({ contractorProject: projectRecord({ customer: "Turner Construction Co." }) })]) });
   const r = await h.call("preview_draft_cor", ARGS);
   assert.equal(r.isError, false, r.text);
   assert.equal(r.json.gc, "Turner Construction Co.");
+  assert.deepEqual(r.json.warnings, []);
+});
+
+test("preview_draft_cor with several contracts shows the Job's GC and warns, listing each contract with its GC, that Clearstory picks the contract", async () => {
+  const h = await setup({ "GET /contracts": envelope([
+    contractDetail({ contractorProject: projectRecord({ customer: "Turner Construction Co." }) }),
+    contractDetail({ id: 9002, name: "Change Work", contractorProject: projectRecord({ customer: "Skanska USA" }) }),
+  ]) });
+  const r = await h.call("preview_draft_cor", ARGS);
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.gc, "Turner Construction");
   assert.deepEqual(r.json.contracts, [{ id: 9001, name: "Prime Sitework" }, { id: 9002, name: "Change Work" }]);
   assert.deepEqual(r.json.warnings, [
-    "Job 23104 has 2 contracts (9001 Prime Sitework; 9002 Change Work). Clearstory chooses which one the draft COR goes on; check it in Clearstory.",
+    "Job 23104 has 2 contracts: 9001 Prime Sitework (GC Turner Construction Co.); 9002 Change Work (GC Skanska USA). Clearstory picks which contract the draft COR goes on (it can't be chosen here); check it in Clearstory.",
   ]);
 });
 

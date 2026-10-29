@@ -29,3 +29,5 @@ export const personName = (p: unknown): string | undefined => {
 };
 /** ISO timestamp → YYYY-MM-DD (the date as Clearstory stored it, UTC). */
 export const day = (v: unknown) => (typeof v === "string" && v.length >= 10 ? v.slice(0, 10) : undefined);
+/** Dollars for messages: "$1,234.50" (always 2 dp). */
+export const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
