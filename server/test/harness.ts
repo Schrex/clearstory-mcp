@@ -19,6 +19,7 @@ export const TEST_CFG: Config = {
   pageSize: 100,
   maxSubrequests: 45,
   allowedCidrs: [],
+  maxDraftCorAmount: 250000,
 };
 
 export interface Recorded { method: string; url: string; headers: Record<string, string>; body?: string }
@@ -78,6 +79,10 @@ export interface HarnessOpts {
   kv?: FakeKv;
   token?: () => Response;
   sleep?: (ms: number) => Promise<void>;
+  /** Signed-in email (OAuth props). Default tester@schrex.com. */
+  email?: string;
+  /** Clock for tools (e.g. the draft COR footer date). */
+  now?: () => Date;
 }
 
 export async function harness(routes: Routes = {}, opts: HarnessOpts = {}) {
@@ -85,7 +90,7 @@ export async function harness(routes: Routes = {}, opts: HarnessOpts = {}) {
   const kv = opts.kv ?? fakeKv();
   const { fetch, calls } = fakeFetch(routes, cfg, opts.token);
   const cs = new ClearstoryClient(cfg, kv.kv, { fetch, sleep: opts.sleep ?? (async () => {}) });
-  const server = buildServer(cfg, cs);
+  const server = buildServer(cfg, cs, { email: opts.email ?? "tester@schrex.com", kv: kv.kv, now: opts.now });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(a), client.connect(b)]);

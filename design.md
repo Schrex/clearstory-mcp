@@ -41,6 +41,7 @@ Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clea
 | list_gcs | GET /customers | GC list, internal ids |
 | list_rates | GET /rates/{type} or /rates/project/{projectId}/{type} | Labor/equipment rates used for pricing (check vs HeavyJob pay classes) |
 | list_reference | GET /labels, GET /reason-categories, GET /users | Label/reason/user ids for filters |
+| preview_draft_cor | GET /projects, /contracts, /cors; KV `cor-preview:<id>` (15 min), ledger `cor-created:<jobId>:<title>` | Draft COR preview (checks, contract + duplicate warnings, `preview_id` for `create_draft_cor`); no Clearstory write (#14) |
 
 Deferred to v0.2: `export_cor_log` (list_cors + line items → xlsx/csv in KV, single-use 15-min link).
 

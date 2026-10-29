@@ -35,7 +35,7 @@ export function createMcpHandler(deps: ClientDeps = {}) {
 
       // Fresh client per request: per-invocation subrequest budget and state.
       const cs = new ClearstoryClient(cfg, env.OAUTH_KV, deps);
-      const server = buildServer(cfg, cs);
+      const server = buildServer(cfg, cs, { email: props.email, kv: env.OAUTH_KV });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       await server.connect(transport);
       try {

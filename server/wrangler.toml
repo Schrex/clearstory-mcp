@@ -10,7 +10,7 @@ workers_dev = true
 ALLOWED_CIDRS = "160.79.104.0/21"     # applied to /mcp only (Anthropic egress)
 CLEARSTORY_MAX_SUBREQUESTS = "45"     # free plan allows 50 per request; token + every page count
 PUBLIC_ORIGIN = "https://schrex-clearstory-mcp.schrex.workers.dev"   # canonical OAuth resource = PUBLIC_ORIGIN + /mcp
-# Optional overrides: CLEARSTORY_PAGE_SIZE (1-100, default 100), CLEARSTORY_API_BASE, CLEARSTORY_TOKEN_URL
+# Optional overrides: CLEARSTORY_PAGE_SIZE (1-100, default 100), CLEARSTORY_API_BASE, CLEARSTORY_TOKEN_URL, MAX_DRAFT_COR_AMOUNT (default 250000)
 
 # Create with `npx wrangler kv namespace create OAUTH_KV` and paste the id below (placeholder until first deploy).
 [[kv_namespaces]]
