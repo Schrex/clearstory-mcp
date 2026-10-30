@@ -82,7 +82,16 @@ type BidItemInput = { estimate_code: string; bid_item: string; description?: str
 export const LINE_ITEM_CONCURRENCY = 4;
 
 const isVoid = (c: Rec) => corStatus(c.status) === "Void" || VOID_STAGES.includes(String(c.stage ?? "").toLowerCase());
-const unitOf = (u: unknown) => (typeof u === "string" ? u.trim().toUpperCase() : "");
+/** Bid item description vs COR title (both normalized): equal, or one contains the other as whole words when the shorter has 2+ words. */
+const titleMatches = (rawDesc: string, rawTitle: string) => {
+  const words = (s: string) => s.replace(/[^a-z0-9]+/g, " ").trim();
+  const [desc, title] = [words(rawDesc), words(rawTitle)];
+  if (!desc || !title) return false;
+  if (desc === title) return true;
+  const [short, long] = desc.length <= title.length ? [desc, title] : [title, desc];
+  return short.includes(" ") && ` ${long} `.includes(` ${short} `);
+};
+const unitOf = (u: unknown) =>(typeof u === "string" ? u.trim().toUpperCase() : "");
 
 /**
  * Double billing by bid item description (#24): sent CORs carry no bid item number, only titles and line descriptions.
@@ -109,7 +118,7 @@ async function bidItemWarnings(cs: ClearstoryClient, projectId: number, items: B
   for (const c of live) {
     const t = normalizeTitle(String(c.title ?? ""));
     described.forEach((d, i) => {
-      if (!overlaps(d.desc, t)) return;
+      if (!titleMatches(d.desc, t)) return;
       warned.add(`${c.id}:${i}`);
       out.push(`Possible double billing: ${label(d.it)} matches the title of ${corRef(c)} on this Job.`);
     });

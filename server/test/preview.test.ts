@@ -405,3 +405,22 @@ test("preview_draft_cor tells Claude to always pass bid item description and uni
   const t = (await h.client.listTools()).tools.find((x) => x.name === "preview_draft_cor")!;
   assert.match(JSON.stringify(t.inputSchema), /Always pass description and unit/);
 });
+
+test("preview_draft_cor title match needs whole words: \"Mobilization\" doesn't match \"Remobilization\"; a one-word description only matches an equal title", async () => {
+  const remob = corSent({ id: 6310, corNumber: "COR 10", title: "Remobilization for phase 2", tmTags: [], tmTagCount: 0 });
+  const rock = corSent({ id: 6311, corNumber: "COR 11", title: "Rock removal at manhole 4", tmTags: [], tmTagCount: 0 });
+  const liner = corSent({ id: 6312, corNumber: "COR 12", title: "Extra pond clay liner, north side", tmTags: [], tmTagCount: 0 });
+  const empty = (corId: number) => corLineItems({ corId, labor: [], materials: [], equipment: [], others: [], subcontractors: [], markups: [] });
+  const h = await setup({ "GET /cors": envelope([remob, rock, liner]),
+    "GET /cors/6310/line-items": empty(6310), "GET /cors/6311/line-items": empty(6311), "GET /cors/6312/line-items": empty(6312) });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Site work",
+    sources: { heavybid: [
+      { estimate_code: PM, bid_item: "10100", description: "Mobilization", unit: "LS" },
+      { estimate_code: PM, bid_item: "20300", description: "Rock", unit: "CY" },
+      { estimate_code: PM, bid_item: "20210", description: "Pond clay liner", unit: "CY" },
+    ] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid J2611-PM bid item 20210 \"Pond clay liner\" matches the title of COR 12 \"Extra pond clay liner, north side\" (id 6312, In Review) on this Job.",
+  ]);
+});
