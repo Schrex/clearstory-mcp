@@ -1,6 +1,6 @@
 # Clearstory MCP
 
-Read-only MCP connector for Clearstory (Schreiber Excavating). Design: `design.md`.
+MCP connector for Clearstory (Schreiber Excavating). Read-only except creating draft CORs (`docs/adr/0003-draft-cor-create-only-write.md`). Design: `design.md`.
 
 ## Agent skills
 

@@ -32,3 +32,6 @@ export function dateRange(args: Record<string, unknown>, fromField: string, unti
   if (until) out.until = `${until}T23:59:59.999Z`;
   return out;
 }
+
+/** The calendar date (YYYY-MM-DD) at Schreiber, in New York. */
+export const localDay = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });

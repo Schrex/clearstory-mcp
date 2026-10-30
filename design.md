@@ -7,7 +7,7 @@ Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clea
 ## Clearstory API (VERIFIED from spec/help center unless noted)
 - Base: `https://io.clearstory.build/clearstory/v1`. Legacy `web-api.clearstory.build` (Basic auth keys) shuts off **after 2026-12-15**; build only on the new API.
 - Auth: OAuth2 client credentials. `POST https://auth.clearstory.build/oauth/token` with `grant_type=client_credentials`, `client_id`, `client_secret`, `audience=https://io.clearstory.build` (must match exactly). Bearer token, `expires_in` 24 h default.
-- **No scopes.** The app acts as the whole company with read *and* write. Read-only must be enforced by us: allowlist GET only in `clearstory.ts` (mirror of `READ_POSTS`, but empty: no POST/PATCH/DELETE at all).
+- **No scopes.** The app acts as the whole company with read *and* write. Write protection must be enforced by us: `clearstory.ts` allows GET plus exactly one write, `POST /cors` (draft COR create, [ADR 0003](docs/adr/0003-draft-cor-create-only-write.md)); every other POST/PATCH/DELETE is refused before sending.
 - `User-Agent` header required (blank → 400). Errors: 401 bad token, 422 validation (e.g. `take=0`), 429 throttled (token URL too) with `Retry-After`.
 - Credentials: Account Owner only, Professional plan only, Settings > Advanced Settings > Web API Applications. Max 3 apps; secret shown once.
 - Paging: `limit`/`offset` (aliases `take`/`skip`), 1–100 per page. Most lists take `fromUpdatedAt`/`untilUpdatedAt` (ISO-8601, UTC default).
@@ -41,12 +41,14 @@ Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clea
 | list_gcs | GET /customers | GC list, internal ids |
 | list_rates | GET /rates/{type} or /rates/project/{projectId}/{type} | Labor/equipment rates used for pricing (check vs HeavyJob pay classes) |
 | list_reference | GET /labels, GET /reason-categories, GET /users | Label/reason/user ids for filters |
+| preview_draft_cor | GET /projects, /contracts, /cors; KV `cor-preview:<id>` (15 min), ledger `cor-created:<jobId>:<title>` | Draft COR preview (checks, contract + duplicate warnings, `preview_id` for `create_draft_cor`); no Clearstory write (#14) |
+| create_draft_cor | POST /cors (body from the stored preview); on unknown outcome one GET /cors lookup; KV ledger `cor-created:<jobId>:<title>` | Creates the previewed draft COR (`preview_id` only, single use); never retried, unknown outcome → user checks Clearstory (#15) |
 
 Deferred to v0.2: `export_cor_log` (list_cors + line items → xlsx/csv in KV, single-use 15-min link).
 
 Defaults (agreed 2026-10-27): inbox `sent`; Void/Waived CORs and archived Jobs excluded unless asked; Stale COR = In Review > 30 days; aging buckets 0–14 / 15–30 / 31–60 / 60+; **Exposure** (In Review $ + Approved to Proceed $) is the headline number on `get_cor_log_summary` and `get_cor_aging`. Terms per [GLOSSARY.md](GLOSSARY.md).
 
-Deliberately **not** exposed (write): POST /cors, POST /tags, PATCH/DELETE /tags/{id}, POST/PATCH /customers, POST/PATCH /projects, project users/integrations, COR labels, POST /change-notifications, POST /attachments. Candidate for a later v0.2 with confirmation: `create_draft_cor` and `create_tm_tag` (drafts only, never send).
+Deliberately **not** exposed (write): POST /tags, PATCH/DELETE /tags/{id}, POST/PATCH /customers, POST/PATCH /projects, project users/integrations, COR labels, POST /change-notifications, POST /attachments. Candidate for later with confirmation: `create_tm_tag` (drafts only, never send).
 
 ## Cross-system (HeavyJob + Clearstory): Unbilled T&M (priority 1)
 v0.1: Claude joins the two connectors (decided, [ADR 0002](docs/adr/0002-separate-worker-from-heavyjob.md)); combined reconcile tool deferred.
@@ -68,6 +70,7 @@ Accept job **number** as well as id; trimmed codes; compact default records with
 ## Decided (2026-10-27)
 - Team access (2026-10-28): `ALLOWED_USER_EMAIL` = the same 6 named @schrex.com emails as HeavyJob (zach, dave, prasad, ryan, sumanth, jeri) + one shared team password (Bitwarden item "ClearStory MCP connector", "HCSS Connectors" collection); sign-in lasts 90 days (refresh TTL), access tokens 1 h. Email is not verified, so the password is the gate. Revoke everyone: rotate `TOKEN_EPOCH` (+ password via `scripts/set-password.sh`). Changing the password alone signs no one out.
 - Read-only v0.1 ([ADR 0001](docs/adr/0001-read-only-enforced-in-server.md)).
+- v0.2 draft COR ([ADR 0003](docs/adr/0003-draft-cor-create-only-write.md)): `preview_draft_cor` then `create_draft_cor`, the only write (POST /cors, never sent to the GC); every signed-in user may create, for now; amount cap per draft COR 250,000 by default (`MAX_DRAFT_COR_AMOUNT`). Pricing (2026-10-30): default HeavyBid bid price × quantity; markup, cost basis or actual HeavyJob hours only when the PM asks in chat; PM reviews the preview and confirms; math goes in the COR description.
 - Schreiber is mainly a sub: default inbox `sent`.
 - Confirmed in Clearstory settings 2026-10-27: plan **Professional**, company type **Subcontractor**.
 - Web API Application `Schreiber Claude MCP` created 2026-10-27 by Sumanth; `CLEARSTORY_CLIENT_ID` / `CLEARSTORY_CLIENT_SECRET` set as Worker secrets.

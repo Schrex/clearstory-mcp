@@ -12,6 +12,7 @@ export interface Env {
   CLEARSTORY_MAX_SUBREQUESTS?: string;
   ALLOWED_CIDRS?: string;
   PUBLIC_ORIGIN?: string;            // e.g. https://schrex-clearstory-mcp.schrex.workers.dev
+  MAX_DRAFT_COR_AMOUNT?: string;     // cap per draft COR (default 250000)
   OAUTH_KV: KVNamespace;             // OAuth library state + login throttle + cached Clearstory token
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers; // injected by the library
 }
@@ -25,6 +26,7 @@ export interface Config {
   pageSize: number;        // Clearstory limit, 1-100
   maxSubrequests: number;  // Workers free plan: 50 per invocation
   allowedCidrs: string[];
+  maxDraftCorAmount: number; // largest amount preview_draft_cor accepts
 }
 
 const num = (v: string | undefined, d: number) => (v && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -39,6 +41,7 @@ export function loadConfig(env: Env): Config {
     audience: "https://io.clearstory.build", // must match exactly
     pageSize: Math.min(100, Math.max(1, num(env.CLEARSTORY_PAGE_SIZE, 100))),
     maxSubrequests: Math.min(48, num(env.CLEARSTORY_MAX_SUBREQUESTS, 45)),
+    maxDraftCorAmount: num(env.MAX_DRAFT_COR_AMOUNT, 250_000),
     allowedCidrs: (env.ALLOWED_CIDRS ?? "160.79.104.0/21").split(",").map((s) => s.trim()).filter(Boolean),
   };
 }
