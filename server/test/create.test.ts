@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { harness, json, type FakeRequest, type HarnessOpts } from "./harness.ts";
 import { contractDetail, envelope, projectRecord } from "./fixtures.ts";
 import { corDetail, corSent } from "./fixtures-cors.ts";
-import { createdKey } from "../src/tools/draft-cor.ts";
+import { createdKey, sourceKey } from "../src/tools/draft-cor.ts";
 
 const NOW = () => new Date("2026-10-29T15:00:00.000Z");
 const ARGS = { job: "23104", title: "Extra 12in storm, 150 LF", description: "150 LF of 12\" storm at bid price.", amount: 12345.678 };
@@ -209,4 +209,39 @@ test("a preview after an unknown outcome warns that a draft with this title may 
   assert.deepEqual(r.json.warnings, [
     "Possible duplicate: a create of a draft COR with this title via Claude on this Job had an unknown outcome (by pm@schrex.com, 2026-10-29). Check Clearstory; it may not show in Clearstory's COR list until sent.",
   ]);
+});
+
+// ---- source ledger (#20) ----
+const SOURCES = { heavybid: [{ estimate_code: "B26055", bid_item: "2575" }], tm_tag_ids: [5101] };
+const sourcePuts = (h: Awaited<ReturnType<typeof setup>>) => h.kv.puts.filter((x) => x.key.startsWith("cor-source:"));
+
+test("created: writes a 365-day source ledger entry per source holding the COR number; a later preview under another title warns", async () => {
+  const h = await setup();
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  assert.equal((await h.call("create_draft_cor", { preview_id: p.preview_id })).isError, false);
+  const puts = sourcePuts(h);
+  assert.deepEqual(puts.map((x) => x.key), [sourceKey(7001, { heavybid: SOURCES.heavybid[0] }), sourceKey(7001, { tm_tag_id: 5101 })]);
+  for (const x of puts) {
+    assert.deepEqual(x.opts, { expirationTtl: 365 * 24 * 60 * 60 });
+    assert.deepEqual(JSON.parse(x.value), { state: "created", cor_id: 6301, cor_number: "COR-018", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
+  }
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Clay liner", sources: { heavybid: SOURCES.heavybid } });
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid B26055 bid item 2575 is already on COR-018 (COR id 6301, by pm@schrex.com, 2026-10-29), created via Claude on this Job. It may not show in Clearstory's COR list until sent.",
+  ]);
+});
+
+test("source ledger is written on an unknown outcome, not on a refused create, and not without sources", async () => {
+  const unknown = await setup({ "POST /cors": () => json({}, 503) });
+  await unknown.call("create_draft_cor", { preview_id: (await preview(unknown, { ...ARGS, sources: SOURCES })).preview_id });
+  assert.equal(sourcePuts(unknown).length, 2);
+  for (const x of sourcePuts(unknown)) assert.equal(JSON.parse(x.value).state, "unknown");
+
+  const refused = await setup({ "POST /cors": () => json({ message: "no" }, 422) });
+  await refused.call("create_draft_cor", { preview_id: (await preview(refused, { ...ARGS, sources: SOURCES })).preview_id });
+  assert.equal(sourcePuts(refused).length, 0);
+
+  const plain = await setup();
+  await plain.call("create_draft_cor", { preview_id: (await preview(plain)).preview_id });
+  assert.equal(sourcePuts(plain).length, 0);
 });

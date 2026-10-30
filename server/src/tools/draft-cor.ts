@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { ToolContext } from "../tools.js";
 import { jobArgs, resolveJob } from "../jobs.js";
 import { pullAll } from "../paging.js";
-import { corStatus } from "../cors.js";
+import { corStatus, tmTagIds } from "../cors.js";
 import { localDay } from "../dates.js";
 import { WriteOutcomeUnknownError, WriteRefusedError, type ClearstoryClient, type CreatedCor } from "../clearstory.js";
 import { compact, day, money, reply, usd, type Rec } from "../util.js";
@@ -26,6 +26,8 @@ export interface StoredPreview {
   job_number: string;
   email: string;
   exp: string; // ISO; KV also expires the entry
+  /** Structured sources (#20); create_draft_cor writes a source ledger entry for each. */
+  sources?: CorSource[];
 }
 
 /** Title for duplicate checks: lowercase, whitespace collapsed and trimmed. */
@@ -36,6 +38,27 @@ export const createdKey = (jobId: number, title: string) => `cor-created:${jobId
 
 /** Ledger value under createdKey (written by create_draft_cor; every field optional when read). */
 export interface CreatedDraft { state?: "created" | "unknown"; cor_id?: number; cor_number?: string; email?: string; created_at?: string }
+
+/** Source-ledger entries kept 365 days. */
+export const SOURCE_TTL_S = 365 * 24 * 60 * 60;
+
+/** Where a draft COR's numbers came from: one HeavyBid bid item or one T&M Tag (Clearstory tag id). */
+export type CorSource = { heavybid: { estimate_code: string; bid_item: string } } | { tm_tag_id: number };
+
+const part = (s: string) => s.trim().replace(/\s+/g, " ").toUpperCase();
+
+/** KV key of the source ledger entry (a CreatedDraft) create_draft_cor writes per Job and source, e.g. `cor-source:7001:tag:5101`. */
+export const sourceKey = (jobId: number, src: CorSource) => "heavybid" in src
+  ? `cor-source:${jobId}:hb:${part(src.heavybid.estimate_code)}:${part(src.heavybid.bid_item)}`
+  : `cor-source:${jobId}:tag:${src.tm_tag_id}`;
+
+/** Human label of a source, e.g. "HeavyBid B26055 bid item 2575" or "T&M Tag id 5101". */
+export const sourceLabel = (src: CorSource) => "heavybid" in src
+  ? `HeavyBid ${src.heavybid.estimate_code.trim()} bid item ${src.heavybid.bid_item.trim()}`
+  : `T&M Tag id ${src.tm_tag_id}`;
+
+/** Parse a ledger value; unknown shape gives {}. */
+const parseLedger = (raw: string): CreatedDraft => { try { return JSON.parse(raw) as CreatedDraft; } catch { return {}; } };
 
 const overlaps = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
 
@@ -69,13 +92,18 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
   const now = session.now ?? (() => new Date());
   server.tool(
     "preview_draft_cor",
-    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Default pricing: the HeavyBid bid price × quantity for the matching bid item; apply a markup, cost basis or actual HeavyJob hours only when the user asks. Put the math in the description (estimate, bid item, quantity, unit, unit price, any adjustment). Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
+    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Default pricing: the HeavyBid bid price × quantity for the matching bid item; apply a markup, cost basis or actual HeavyJob hours only when the user asks. Put the math in the description (estimate, bid item, quantity, unit, unit price, any adjustment). Always pass sources when you priced from HeavyBid bid items or T&M Tags, so double billing of the same bid item or tag is caught. Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
     {
       ...jobArgs,
       title: z.string().describe("COR title (1-255 characters)."),
       description: z.string().describe("COR description with the pricing breakdown: estimate, bid item, quantity, unit, unit price, adjustments."),
       amount: z.number().describe("COR amount in dollars (> 0)."),
       source: z.string().optional().describe("Where the numbers came from, e.g. \"HeavyBid B26055 bid items 2575, 2555\"."),
+      sources: z.object({
+        heavybid: z.array(z.object({ estimate_code: z.string().min(1), bid_item: z.string().min(1) })).optional()
+          .describe("HeavyBid bid items priced, e.g. [{estimate_code: \"B26055\", bid_item: \"2575\"}]."),
+        tm_tag_ids: z.array(z.number().int()).optional().describe("Clearstory T&M Tag ids (not tag numbers) billed on this COR."),
+      }).optional().describe("Structured sources for the double-billing check; always pass when priced from HeavyBid or T&M Tags."),
     },
     { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async (a) => {
@@ -105,6 +133,31 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         const status = corStatus(c.status);
         warnings.push(`Possible duplicate: ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job has the same or an overlapping title.`);
       }
+      const sources: CorSource[] = [
+        ...(a.sources?.heavybid ?? []).map((heavybid) => ({ heavybid })),
+        ...[...new Set(a.sources?.tm_tag_ids ?? [])].map((tm_tag_id) => ({ tm_tag_id })),
+      ];
+      // Double billing (#20): T&M Tags already on a non-Void COR on the Job, then the source ledger (drafts aren't listed).
+      const onCor = new Set<string>();
+      for (const src of sources) {
+        if (!("tm_tag_id" in src)) continue;
+        for (const c of cors.records) {
+          const status = corStatus(c.status);
+          if (status === "Void" || !tmTagIds(c).includes(src.tm_tag_id)) continue;
+          onCor.add(`${src.tm_tag_id}:${c.id}`);
+          warnings.push(`Possible double billing: ${sourceLabel(src)} is already on ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job.`);
+        }
+      }
+      for (const src of sources) {
+        const raw = await session.kv.get(sourceKey(projectId, src));
+        if (raw === null) continue;
+        const d = parseLedger(raw);
+        if ("tm_tag_id" in src && onCor.has(`${src.tm_tag_id}:${d.cor_id}`)) continue;
+        const by = [d.email ? `by ${d.email}` : "", day(d.created_at)].filter(Boolean).join(", ");
+        warnings.push(d.state === "unknown"
+          ? `Possible double billing: ${sourceLabel(src)} was in a create of a draft COR via Claude on this Job with an unknown outcome${by ? ` (${by})` : ""}. Check Clearstory; it may not show in Clearstory's COR list until sent.`
+          : `Possible double billing: ${sourceLabel(src)} is already on ${d.cor_number ?? "a draft COR"} (${[d.cor_id !== undefined ? `COR id ${d.cor_id}` : "", by].filter(Boolean).join(", ")}), created via Claude on this Job. It may not show in Clearstory's COR list until sent.`);
+      }
       if (cors.scope === "partial") warnings.push("Duplicate check incomplete: Clearstory request limit reached before every COR on the Job was read.");
       const ledger = await session.kv.get(createdKey(projectId, title));
       if (ledger !== null) {
@@ -116,7 +169,8 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           : `Possible duplicate: a draft COR with this title was already created via Claude on this Job${info ? ` (${info})` : ""}. It may not show in Clearstory's COR list until sent.`);
       }
       const t = now();
-      const footer = [`Drafted via Claude by ${session.email} on ${localDay(t)}.`, a.source?.trim() ? `Source: ${a.source.trim()}` : ""].filter(Boolean).join("\n");
+      const footer = [`Drafted via Claude by ${session.email} on ${localDay(t)}.`, a.source?.trim() ? `Source: ${a.source.trim()}` : "",
+        sources.length ? `Sources: ${sources.map(sourceLabel).join("; ")}` : ""].filter(Boolean).join("\n");
       const description = `${a.description.trim()}\n\n${footer}`;
       const previewId = crypto.randomUUID();
       // One contract: its GC. Several: the Job's GC (Clearstory picks the contract; see the warning).
@@ -126,6 +180,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         job_number: jobNumber,
         email: session.email,
         exp: new Date(t.getTime() + PREVIEW_TTL_S * 1000).toISOString(),
+        ...(sources.length ? { sources } : {}),
       };
       await session.kv.put(previewKey(previewId), JSON.stringify(stored), { expirationTtl: PREVIEW_TTL_S });
       // Audit: never title, description or secrets.
@@ -161,6 +216,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       const record = async (e: Pick<CreatedDraft, "state" | "cor_id" | "cor_number">) => {
         const entry: CreatedDraft = { ...e, email: session.email, created_at: at };
         await session.kv.put(createdKey(p.body.projectId, p.body.title), JSON.stringify(entry), { expirationTtl: LEDGER_TTL_S });
+        for (const src of p.sources ?? []) await session.kv.put(sourceKey(p.body.projectId, src), JSON.stringify(entry), { expirationTtl: SOURCE_TTL_S });
         return entry;
       };
       let cor: CreatedCor;

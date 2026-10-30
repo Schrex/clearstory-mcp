@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness, type FakeRequest, type HarnessOpts } from "./harness.ts";
 import { contractDetail, envelope, projectRecord } from "./fixtures.ts";
-import { corSent } from "./fixtures-cors.ts";
-import { createdKey, normalizeTitle } from "../src/tools/draft-cor.ts";
+import { corSent, corTag } from "./fixtures-cors.ts";
+import { createdKey, normalizeTitle, sourceKey } from "../src/tools/draft-cor.ts";
 
 const NOW = () => new Date("2026-10-29T15:00:00.000Z");
 const ARGS = { job: "23104", title: "Extra 12in storm, 150 LF", description: "150 LF of 12\" storm at bid price.", amount: 12345.678 };
@@ -162,4 +162,63 @@ test("preview_draft_cor unknown job number returns close matches", async () => {
   const r = await h.call("preview_draft_cor", { ...ARGS, job: "2310" });
   assert.equal(r.isError, true);
   assert.match(r.text, /No Job with job number '2310'\. Close matches: 23104 Route 30 Sewer Extension/);
+});
+
+// ---- duplicate check by source (#20) ----
+const HB = { estimate_code: "B26055", bid_item: "2575" };
+
+test("sourceKey keys a HeavyBid bid item or a T&M Tag id per Job", () => {
+  assert.equal(sourceKey(7001, { heavybid: { estimate_code: " b26055 ", bid_item: "2575 " } }), "cor-source:7001:hb:B26055:2575");
+  assert.equal(sourceKey(7001, { tm_tag_id: 5101 }), "cor-source:7001:tag:5101");
+});
+
+test("preview_draft_cor warns when a bid item was used on an earlier draft COR under a different title, naming that COR", async () => {
+  const h = await setup();
+  await h.kv.kv.put(sourceKey(7001, { heavybid: HB }), JSON.stringify({ state: "created", cor_id: 6300, cor_number: "COR-002", email: "other@schrex.com", created_at: "2026-10-28T12:00:00.000Z" }));
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Clay liner, new title", sources: { heavybid: [HB] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid B26055 bid item 2575 is already on COR-002 (COR id 6300, by other@schrex.com, 2026-10-28), created via Claude on this Job. It may not show in Clearstory's COR list until sent.",
+  ]);
+});
+
+test("preview_draft_cor warns when a T&M Tag is already on a COR on the Job, naming that COR (Void CORs ignored)", async () => {
+  const h = await setup({ "GET /cors": envelope([
+    corSent(),
+    corSent({ id: 6202, corNumber: "COR-020", title: "Voided", status: "rejected", tmTags: [corTag({ id: 5103 })] }),
+  ]) });
+  const r = await h.call("preview_draft_cor", { ...ARGS, sources: { tm_tag_ids: [5101, 5103, 5999] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: T&M Tag id 5101 is already on COR-017 \"Rock excavation at MH-4\" (id 6201, In Review) on this Job.",
+  ]);
+});
+
+test("preview_draft_cor warns from the ledger when a T&M Tag is on a draft COR we created (drafts aren't listed)", async () => {
+  const h = await setup();
+  await h.kv.kv.put(sourceKey(7001, { tm_tag_id: 5101 }), JSON.stringify({ state: "unknown", email: "other@schrex.com", created_at: "2026-10-28T12:00:00.000Z" }));
+  const r = await h.call("preview_draft_cor", { ...ARGS, sources: { tm_tag_ids: [5101] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: T&M Tag id 5101 was in a create of a draft COR via Claude on this Job with an unknown outcome (by other@schrex.com, 2026-10-28). Check Clearstory; it may not show in Clearstory's COR list until sent.",
+  ]);
+});
+
+test("preview_draft_cor puts sources in the description footer and stores them with the preview; no sources = unchanged", async () => {
+  const h = await setup();
+  const r = await h.call("preview_draft_cor", { ...ARGS, source: "HeavyBid B26055", sources: { heavybid: [HB, { estimate_code: "B26055", bid_item: "2555" }], tm_tag_ids: [5101] } });
+  assert.equal(r.isError, false, r.text);
+  assert.match(r.json.description, /on 2026-10-29\.\nSource: HeavyBid B26055\nSources: HeavyBid B26055 bid item 2575; HeavyBid B26055 bid item 2555; T&M Tag id 5101$/);
+  const stored = JSON.parse(h.kv.store.get(`cor-preview:${r.json.preview_id}`)!);
+  assert.deepEqual(stored.sources, [{ heavybid: HB }, { heavybid: { estimate_code: "B26055", bid_item: "2555" } }, { tm_tag_id: 5101 }]);
+  const plain = await h.call("preview_draft_cor", ARGS);
+  assert.match(plain.json.description, /on 2026-10-29\.$/);
+  assert.equal(JSON.parse(h.kv.store.get(`cor-preview:${plain.json.preview_id}`)!).sources, undefined);
+  assert.deepEqual(plain.json.warnings, []);
+});
+
+test("preview_draft_cor tells Claude to always pass sources when priced from HeavyBid or T&M Tags", async () => {
+  const h = await setup();
+  const t = (await h.client.listTools()).tools.find((x) => x.name === "preview_draft_cor")!;
+  assert.match(t.description!, /Always pass sources when you priced from HeavyBid bid items or T&M Tags/);
 });
