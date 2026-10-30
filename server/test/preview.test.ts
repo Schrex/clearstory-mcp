@@ -222,3 +222,36 @@ test("preview_draft_cor tells Claude to always pass sources when priced from Hea
   const t = (await h.client.listTools()).tools.find((x) => x.name === "preview_draft_cor")!;
   assert.match(t.description!, /Always pass sources when you priced from HeavyBid bid items or T&M Tags/);
 });
+
+test("preview_draft_cor guides pricing: right estimate, round up, copy recent CORs, T&M rates by rate_id, no double markup", async () => {
+  const h = await setup();
+  const d = (await h.client.listTools()).tools.find((x) => x.name === "preview_draft_cor")!.description!;
+  assert.match(d, /estimate code starts with the job number and whose GC\/owner matches the Clearstory Job/);
+  assert.match(d, /prefer the Job's -PM estimate for change bid items/);
+  assert.match(d, /Round each unit price up to the cent before multiplying by quantity/);
+  assert.match(d, /read the Job's most recent CORs \(get_cor\) and copy their markup %, tax and rounding/);
+  assert.match(d, /list_rates for the Job and match by rate_id/);
+  assert.match(d, /Bid prices already include markup/);
+  assert.match(d, /pass pricing/);
+});
+
+test("preview_draft_cor echoes pricing as checks for the PM to confirm; unstated items say so; no pricing = no checks", async () => {
+  const h = await setup();
+  const r = await h.call("preview_draft_cor", { ...ARGS, pricing: { estimate_code: " J2608-PM ", markup_pct: 15, tax_pct: 8, rounding: "up" } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.checks, [
+    "Estimate used: J2608-PM",
+    "Markup: 15% on top of the bid price",
+    "Tax: 8%",
+    "Rounding: unit prices rounded up to the cent",
+  ]);
+  const partial = await h.call("preview_draft_cor", { ...ARGS, pricing: { markup_pct: 0, rounding: "nearest" } });
+  assert.deepEqual(partial.json.checks, [
+    "Estimate used: not stated",
+    "Markup: none on top of the bid price",
+    "Tax: not stated",
+    "Rounding: unit prices rounded to the nearest cent",
+  ]);
+  const plain = await h.call("preview_draft_cor", ARGS);
+  assert.equal(plain.json.checks, undefined);
+});
