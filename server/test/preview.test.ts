@@ -424,3 +424,21 @@ test("preview_draft_cor title match needs whole words: \"Mobilization\" doesn't 
     "Possible double billing: HeavyBid J2611-PM bid item 20210 \"Pond clay liner\" matches the title of COR 12 \"Extra pond clay liner, north side\" (id 6312, In Review) on this Job.",
   ]);
 });
+
+test("preview_draft_cor trims the GC name (Clearstory can send trailing spaces)", async () => {
+  const h = await setup({ "GET /contracts": envelope([contractDetail({ contractorProject: projectRecord({ customer: "DiMarco " }) })]) });
+  const r = await h.call("preview_draft_cor", ARGS);
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.gc, "DiMarco");
+});
+
+test("preview_draft_cor names a bare COR number as \"COR #8\" so it isn't confused with a COR number inside the title", async () => {
+  const cor8 = corSent({ id: 2028710, corNumber: "8", title: "COR 5 - New Rink Drainage", tmTags: [], tmTagCount: 0 });
+  const h = await setup({ "GET /cors": envelope([cor8]) });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Rink storm work",
+    sources: { heavybid: [{ estimate_code: PM, bid_item: "20505", description: "New Rink Drainage", unit: "LS" }] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid J2611-PM bid item 20505 \"New Rink Drainage\" matches the title of COR #8 \"COR 5 - New Rink Drainage\" (id 2028710, In Review) on this Job.",
+  ]);
+});

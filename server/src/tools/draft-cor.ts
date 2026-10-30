@@ -59,6 +59,12 @@ export const sourceLabel = (src: CorSource) => "heavybid" in src
 /** Parse a ledger value; unknown shape gives {}. */
 export const parseLedger = (raw: string): CreatedDraft => { try { return JSON.parse(raw) as CreatedDraft; } catch { return {}; } };
 
+/** A COR's number for messages: a bare number ("8") becomes "COR #8"; one already starting with "COR" is kept; none gives "COR". */
+export const corName = (n: unknown) => {
+  const s = n === null || n === undefined ? "" : String(n).trim();
+  return !s ? "COR" : /^cor\b/i.test(s) ? s : `COR #${s}`;
+};
+
 const overlaps = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
 
 /** Pricing choices passed to preview_draft_cor (#21). */
@@ -111,7 +117,7 @@ async function bidItemWarnings(cs: ClearstoryClient, projectId: number, items: B
     });
   if (!described.length) return [];
   const label = (it: BidItemInput) => `${sourceLabel({ heavybid: it })} "${it.description!.trim()}"`;
-  const corRef = (c: Rec) => `${c.corNumber || "COR"} "${c.title}" (id ${c.id}${corStatus(c.status) ? `, ${corStatus(c.status)}` : ""})`;
+  const corRef = (c: Rec) => `${corName(c.corNumber)} "${c.title}" (id ${c.id}${corStatus(c.status) ? `, ${corStatus(c.status)}` : ""})`;
   const live = cors.filter((c) => !isVoid(c)).sort((x, y) => Number(y.id) - Number(x.id));
   const out: string[] = [];
   const warned = new Set<string>(); // `${corId}:${index in described}`
@@ -202,7 +208,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       // No contractId on create: Clearstory picks the contract itself.
       const contracts = (await pullAll<Rec>(cs, { path: "/contracts", query: { projectId, withProjects: true } })).records;
       if (!contracts.length) throw new Error(`Job ${jobNumber} has no contract in Clearstory, so a COR can't be drafted on it. Add the contract in Clearstory first.`);
-      const contractGc = (c: Rec) => ((c.contractorProject as Rec | undefined)?.customer ?? job.customer) as string | undefined;
+      const contractGc = (c: Rec) => (((c.contractorProject as Rec | undefined)?.customer ?? job.customer) as string | undefined)?.trim();
       if (contracts.length > 1) {
         const list = contracts.map((c) => `${`${c.id} ${c.name ?? ""}`.trim()}${contractGc(c) ? ` (GC ${contractGc(c)})` : ""}`).join("; ");
         warnings.push(`Job ${jobNumber} has ${contracts.length} contracts: ${list}. Clearstory picks which contract the draft COR goes on (it can't be chosen here); check it in Clearstory.`);
@@ -213,7 +219,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       for (const c of cors.records) {
         if (!overlaps(want, normalizeTitle(String(c.title ?? "")))) continue;
         const status = corStatus(c.status);
-        warnings.push(`Possible duplicate: ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job has the same or an overlapping title.`);
+        warnings.push(`Possible duplicate: ${corName(c.corNumber)} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job has the same or an overlapping title.`);
       }
       // Deduped by ledger key (same normalized bid item / tag id once).
       const seenSrc = new Set<string>();
@@ -234,7 +240,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           const status = corStatus(c.status);
           if (status === "Void" || !tmTagIds(c).includes(src.tm_tag_id)) continue;
           onCor.add(`${src.tm_tag_id}:${c.id}`);
-          warnings.push(`Possible double billing: ${sourceLabel(src)} is already on ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job.`);
+          warnings.push(`Possible double billing: ${sourceLabel(src)} is already on ${corName(c.corNumber)} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job.`);
         }
       }
       warnings.push(...await bidItemWarnings(cs, projectId, a.sources?.heavybid ?? [], cors.records));
@@ -247,7 +253,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         const by = [d.email ? `by ${d.email}` : "", day(d.created_at)].filter(Boolean).join(", ");
         warnings.push(d.state === "unknown"
           ? `Possible double billing: ${sourceLabel(src)} was in a create of a draft COR via Claude on this Job with an unknown outcome${by ? ` (${by})` : ""}. Check Clearstory; it may not show in Clearstory's COR list until sent.`
-          : `Possible double billing: ${sourceLabel(src)} is already on ${d.cor_number ?? "a draft COR"} (${[d.cor_id !== undefined ? `COR id ${d.cor_id}` : "", by].filter(Boolean).join(", ")}), created via Claude on this Job. It may not show in Clearstory's COR list until sent.`);
+          : `Possible double billing: ${sourceLabel(src)} is already on ${d.cor_number !== undefined ? corName(d.cor_number) : "a draft COR"} (${[d.cor_id !== undefined ? `COR id ${d.cor_id}` : "", by].filter(Boolean).join(", ")}), created via Claude on this Job. It may not show in Clearstory's COR list until sent.`);
       }
       if (cors.scope === "partial") warnings.push("Duplicate check incomplete: Clearstory request limit reached before every COR on the Job was read.");
       const ledger = await session.kv.get(createdKey(projectId, title));
@@ -264,7 +270,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       const description = `${a.description.trim()}\n\n${footer}`;
       const previewId = crypto.randomUUID();
       // One contract: its GC. Several: the Job's GC (Clearstory picks the contract; see the warning).
-      const gc = contracts.length === 1 ? contractGc(contracts[0]) : job.customer as string | undefined;
+      const gc = contracts.length === 1 ? contractGc(contracts[0]) : (job.customer as string | undefined)?.trim();
       const stored: StoredPreview = {
         body: { projectId, title, description, amount },
         job_number: jobNumber,
