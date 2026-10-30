@@ -42,7 +42,7 @@ Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clea
 | list_rates | GET /rates/{type} or /rates/project/{projectId}/{type} | Labor/equipment rates used for pricing (check vs HeavyJob pay classes) |
 | list_reference | GET /labels, GET /reason-categories, GET /users | Label/reason/user ids for filters |
 | preview_draft_cor | GET /projects, /contracts, /cors; KV `cor-preview:<id>` (15 min), ledger `cor-created:<jobId>:<title>` | Draft COR preview (checks, contract + duplicate warnings, `preview_id` for `create_draft_cor`); no Clearstory write (#14) |
-| create_draft_cor | POST /cors (body from the stored preview); on unknown outcome one GET /cors lookup; KV ledger `cor-created:<jobId>:<title>` | Creates the previewed draft COR (`preview_id` only, single use); never retried, unknown outcome → user checks Clearstory (#15) |
+| create_draft_cor | POST /cors (body from the stored preview); no lookup on unknown outcome (`GET /cors` does not list drafts); KV ledger `cor-created:<jobId>:<title>` | Creates the previewed draft COR (`preview_id` only, single use); never retried, unknown outcome → user checks the Job's Draft COR Log in Clearstory (#15, #19) |
 
 Deferred to v0.2: `export_cor_log` (list_cors + line items → xlsx/csv in KV, single-use 15-min link).
 

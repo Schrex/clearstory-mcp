@@ -84,11 +84,6 @@ export class ClearstoryClient {
     return this.request<T>("GET", path, query);
   }
 
-  /** GET with a single attempt: no 401 refresh, no 429/5xx retries (e.g. the one lookup after an unknown create outcome). */
-  async getOnce<T = unknown>(path: string, query: Query = {}): Promise<T> {
-    return this.parseGet<T>(path, await this.send(this.url(path, query), undefined, 1));
-  }
-
   /**
    * Create a draft COR: one POST /cors. Returns the created COR; throws WriteRefusedError (not created),
    * WriteOutcomeUnknownError (may exist: check Clearstory), or a plain Error before anything was sent.
