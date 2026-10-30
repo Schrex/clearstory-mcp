@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { ToolContext } from "../tools.js";
 import { jobArgs, resolveJob } from "../jobs.js";
 import { pullAll } from "../paging.js";
-import { corStatus, tmTagIds } from "../cors.js";
+import { VOID_STAGES, corStatus, shapeLineItems, tmTagIds } from "../cors.js";
 import { localDay } from "../dates.js";
 import { WriteOutcomeUnknownError, WriteRefusedError, type ClearstoryClient, type CreatedCor } from "../clearstory.js";
 import { compact, day, money, reply, usd, type Rec } from "../util.js";
@@ -75,6 +75,73 @@ export function pricingChecks(p: PricingInput): string[] {
   ];
 }
 
+/** A HeavyBid bid item as passed to preview_draft_cor; description and unit drive the #24 check. */
+type BidItemInput = { estimate_code: string; bid_item: string; description?: string; unit?: string };
+
+/** Line-item GETs in flight at once for the bid item check. */
+export const LINE_ITEM_CONCURRENCY = 4;
+
+const isVoid = (c: Rec) => corStatus(c.status) === "Void" || VOID_STAGES.includes(String(c.stage ?? "").toLowerCase());
+const unitOf = (u: unknown) => (typeof u === "string" ? u.trim().toUpperCase() : "");
+
+/**
+ * Double billing by bid item description (#24): sent CORs carry no bid item number, only titles and line descriptions.
+ * Title match: description equals/overlaps a non-Void COR title (no requests). Line match: description (and unit when
+ * both given) equals a line on a non-Void COR; line items read newest COR first, LINE_ITEM_CONCURRENCY at a time,
+ * until the subrequest budget runs out (then a coverage warning). GETs only.
+ */
+async function bidItemWarnings(cs: ClearstoryClient, projectId: number, items: BidItemInput[], cors: Rec[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const described = items
+    .map((it) => ({ it, desc: normalizeTitle(it.description ?? ""), unit: unitOf(it.unit) }))
+    .filter(({ it, desc }) => {
+      const k = sourceKey(projectId, { heavybid: it });
+      if (!desc || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  if (!described.length) return [];
+  const label = (it: BidItemInput) => `${sourceLabel({ heavybid: it })} "${it.description!.trim()}"`;
+  const corRef = (c: Rec) => `${c.corNumber || "COR"} "${c.title}" (id ${c.id}${corStatus(c.status) ? `, ${corStatus(c.status)}` : ""})`;
+  const live = cors.filter((c) => !isVoid(c)).sort((x, y) => Number(y.id) - Number(x.id));
+  const out: string[] = [];
+  const warned = new Set<string>(); // `${corId}:${index in described}`
+  for (const c of live) {
+    const t = normalizeTitle(String(c.title ?? ""));
+    described.forEach((d, i) => {
+      if (!overlaps(d.desc, t)) return;
+      warned.add(`${c.id}:${i}`);
+      out.push(`Possible double billing: ${label(d.it)} matches the title of ${corRef(c)} on this Job.`);
+    });
+  }
+  const todo = live.filter((c) => described.some((_, i) => !warned.has(`${c.id}:${i}`)));
+  let read = live.length - todo.length;
+  const lineWarnings = new Map<number, string[]>(); // by position in todo, so output stays newest first
+  for (let start = 0; start < todo.length; start += LINE_ITEM_CONCURRENCY) {
+    const batch = todo.slice(start, start + LINE_ITEM_CONCURRENCY);
+    const got = await Promise.all(batch.map((c) =>
+      cs.get<Rec>(`/cors/${encodeURIComponent(String(c.id))}/line-items`).then((li) => li ?? {}, () => undefined)));
+    batch.forEach((c, j) => {
+      const li = got[j];
+      if (!li) return;
+      read++;
+      const s = shapeLineItems(li);
+      const lines = [s.labor, s.materials, s.equipment, s.other, s.subcontractors].flat() as Rec[];
+      const ws: string[] = [];
+      described.forEach((d, i) => {
+        if (warned.has(`${c.id}:${i}`)) return;
+        const hit = lines.some((l) => normalizeTitle(String(l.description ?? "")) === d.desc && (!d.unit || !unitOf(l.unit) || unitOf(l.unit) === d.unit));
+        if (hit) ws.push(`Possible double billing: ${label(d.it)} matches a line on ${corRef(c)} on this Job.`);
+      });
+      lineWarnings.set(start + j, ws);
+    });
+    if (got.some((g) => g === undefined)) break; // budget (or Clearstory) stopped us: don't start more
+  }
+  for (let i = 0; i < todo.length; i++) out.push(...(lineWarnings.get(i) ?? []));
+  if (read < live.length) out.push(`Bid item check covered ${read} of ${live.length} CORs on this Job (Clearstory request limit reached or line items unreadable); check the rest in Clearstory.`);
+  return out;
+}
+
 /** Audit log line + KV record. Callers never pass title, description or secrets. */
 async function audit(kv: KVNamespace, rec: { evt: string; preview_id: string; at: string } & Rec) {
   const line = JSON.stringify(rec);
@@ -95,8 +162,13 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       amount: z.number().describe("COR amount in dollars (> 0)."),
       source: z.string().optional().describe("Where the numbers came from, e.g. \"HeavyBid B26055 bid items 2575, 2555\"."),
       sources: z.object({
-        heavybid: z.array(z.object({ estimate_code: z.string().min(1), bid_item: z.string().min(1) })).optional()
-          .describe("HeavyBid bid items priced, e.g. [{estimate_code: \"B26055\", bid_item: \"2575\"}]."),
+        heavybid: z.array(z.object({
+          estimate_code: z.string().min(1),
+          bid_item: z.string().min(1),
+          description: z.string().optional().describe("The HeavyBid bid item description, as in HeavyBid."),
+          unit: z.string().optional().describe("The bid item's unit, e.g. CY."),
+        })).optional()
+          .describe("HeavyBid bid items priced, e.g. [{estimate_code: \"B26055\", bid_item: \"2575\", description: \"Pond clay liner\", unit: \"CY\"}]. Always pass description and unit: they are matched against sent COR titles and lines."),
         tm_tag_ids: z.array(z.number().int()).optional().describe("Clearstory T&M Tag ids (not tag numbers) billed on this COR."),
       }).optional().describe("Structured sources for the double-billing check; always pass when priced from HeavyBid or T&M Tags."),
       pricing: z.object({
@@ -137,7 +209,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       // Deduped by ledger key (same normalized bid item / tag id once).
       const seenSrc = new Set<string>();
       const sources = ([
-        ...(a.sources?.heavybid ?? []).map((heavybid) => ({ heavybid })),
+        ...(a.sources?.heavybid ?? []).map(({ estimate_code, bid_item }) => ({ heavybid: { estimate_code, bid_item } })),
         ...(a.sources?.tm_tag_ids ?? []).map((tm_tag_id) => ({ tm_tag_id })),
       ] as CorSource[]).filter((s) => {
         const k = sourceKey(projectId, s);
@@ -156,6 +228,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           warnings.push(`Possible double billing: ${sourceLabel(src)} is already on ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job.`);
         }
       }
+      warnings.push(...await bidItemWarnings(cs, projectId, a.sources?.heavybid ?? [], cors.records));
       const ledgerRaws = await Promise.all(sources.map((src) => session.kv.get(sourceKey(projectId, src))));
       for (const [i, src] of sources.entries()) {
         const raw = ledgerRaws[i];

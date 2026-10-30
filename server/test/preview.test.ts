@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness, type FakeRequest, type HarnessOpts } from "./harness.ts";
 import { contractDetail, envelope, projectRecord } from "./fixtures.ts";
-import { corSent, corTag } from "./fixtures-cors.ts";
+import { corLineItems, corSent, corTag, lineItem } from "./fixtures-cors.ts";
 import { createdKey, normalizeTitle, sourceKey } from "../src/tools/draft-cor.ts";
 
 const NOW = () => new Date("2026-10-29T15:00:00.000Z");
@@ -283,4 +283,125 @@ test("preview_draft_cor reads the source ledger in parallel", async () => {
   const r = await h.call("preview_draft_cor", { ...ARGS, sources: { heavybid: [HB], tm_tag_ids: [5101, 5102] } });
   assert.equal(r.isError, false, r.text);
   assert.equal(max, 3);
+});
+
+// ---- bid item descriptions vs sent COR titles and lines (#24) ----
+const PM = "J2611-PM";
+/** J2611-PM bid items on COR 2 (live check 2026-10-30): 20204 differs from the COR line only in case. */
+const POND = [
+  { estimate_code: PM, bid_item: "20215", description: "Pond liner subgrade", unit: "CY" },
+  { estimate_code: PM, bid_item: "20210", description: "Pond clay liner", unit: "CY" },
+  { estimate_code: PM, bid_item: "20205", description: "Pond excavation", unit: "CY" },
+  { estimate_code: PM, bid_item: "20204", description: "Under cut", unit: "CY" },
+];
+const cor2 = corSent({ id: 6302, corNumber: "COR 2", title: "Pond changes", tmTags: [], tmTagCount: 0 });
+const cor2Lines = corLineItems({ corId: 6302, labor: [], equipment: [], subcontractors: [], markups: [],
+  materials: [
+    lineItem({ description: "Pond liner subgrade", internalId: "", unit: "CY" }),
+    lineItem({ description: "Pond clay liner", internalId: "", unit: "CY" }),
+    lineItem({ description: "Pond excavation", internalId: "", unit: "CY" }),
+  ],
+  others: [lineItem({ description: "Under Cut", internalId: "", unit: "CY" })],
+});
+const lineGets = (h: { apiCalls: () => { url: string }[] }) => h.apiCalls().filter((c) => /\/cors\/\d+\/line-items$/.test(new URL(c.url).pathname));
+
+test("preview_draft_cor warns when bid item descriptions equal line descriptions on a sent COR under a different title (case ignored)", async () => {
+  const h = await setup({ "GET /cors": envelope([cor2]), "GET /cors/6302/line-items": cor2Lines });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work", sources: { heavybid: POND } });
+  assert.equal(r.isError, false, r.text);
+  const on = "matches a line on COR 2 \"Pond changes\" (id 6302, In Review) on this Job.";
+  assert.deepEqual(r.json.warnings, [
+    `Possible double billing: HeavyBid J2611-PM bid item 20215 "Pond liner subgrade" ${on}`,
+    `Possible double billing: HeavyBid J2611-PM bid item 20210 "Pond clay liner" ${on}`,
+    `Possible double billing: HeavyBid J2611-PM bid item 20205 "Pond excavation" ${on}`,
+    `Possible double billing: HeavyBid J2611-PM bid item 20204 "Under cut" ${on}`,
+  ]);
+  assert.equal(lineGets(h).length, 1);
+});
+
+test("preview_draft_cor warns when a bid item description equals a sent COR's title (free-text lines), without reading its lines", async () => {
+  const cor8 = corSent({ id: 6308, corNumber: "COR 8", title: "New Rink Drainage", status: "approved_to_proceed", tmTags: [], tmTagCount: 0 });
+  const h = await setup({ "GET /cors": envelope([cor8]),
+    "GET /cors/6308/line-items": corLineItems({ corId: 6308, others: [lineItem({ description: "Lump sum drainage per RFI 12", unit: "LS" })] }) });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Rink storm work",
+    sources: { heavybid: [{ estimate_code: PM, bid_item: "20505", description: "new rink  drainage", unit: "LS" }] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid J2611-PM bid item 20505 \"new rink  drainage\" matches the title of COR 8 \"New Rink Drainage\" (id 6308, Approved to Proceed) on this Job.",
+  ]);
+  assert.equal(lineGets(h).length, 0, "already warned for this bid item: no line read");
+});
+
+test("preview_draft_cor gives no line-match warning when the units differ (CY vs LF)", async () => {
+  const h = await setup({ "GET /cors": envelope([cor2]), "GET /cors/6302/line-items": cor2Lines });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work",
+    sources: { heavybid: [{ estimate_code: PM, bid_item: "20210", description: "Pond clay liner", unit: "LF" }] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, []);
+  assert.equal(lineGets(h).length, 1);
+});
+
+test("preview_draft_cor ignores Void CORs for the bid item check (no title warning, no line read)", async () => {
+  const h = await setup({ "GET /cors": envelope([
+    corSent({ id: 6302, corNumber: "COR 2", title: "Pond clay liner", status: "rejected", stage: "void", tmTags: [], tmTagCount: 0 }),
+    corSent({ id: 6303, corNumber: "COR 3", title: "Something", status: "rejected", stage: "waived", tmTags: [], tmTagCount: 0 }),
+  ]), "GET /cors/6302/line-items": cor2Lines, "GET /cors/6303/line-items": cor2Lines });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work", sources: { heavybid: POND } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, []);
+  assert.equal(lineGets(h).length, 0);
+});
+
+test("preview_draft_cor without bid item descriptions reads no line items and is unchanged", async () => {
+  const h = await setup({ "GET /cors": envelope([cor2]), "GET /cors/6302/line-items": cor2Lines });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work",
+    sources: { heavybid: POND.map(({ estimate_code, bid_item }) => ({ estimate_code, bid_item })) } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, []);
+  assert.equal(lineGets(h).length, 0);
+});
+
+test("preview_draft_cor stores HeavyBid sources without description or unit", async () => {
+  const h = await setup();
+  const r = await h.call("preview_draft_cor", { ...ARGS, sources: { heavybid: [POND[0]] } });
+  assert.deepEqual(JSON.parse(h.kv.store.get(`cor-preview:${r.json.preview_id}`)!).sources, [{ heavybid: { estimate_code: PM, bid_item: "20215" } }]);
+});
+
+test("preview_draft_cor reads line items newest COR first, a few at a time; at the request limit it warns with coverage and still returns the preview", async () => {
+  const cors = Array.from({ length: 10 }, (_, i) => corSent({ id: 7000 + i, corNumber: `COR ${i}`, title: `Other ${i}`, tmTags: [], tmTagCount: 0 }));
+  const order: number[] = [];
+  let inFlight = 0, max = 0;
+  const lines = async (req: FakeRequest) => {
+    order.push(Number(req.path.split("/")[2]));
+    inFlight++; max = Math.max(max, inFlight); await new Promise((res) => setTimeout(res, 2)); inFlight--;
+    return corLineItems({ labor: [], materials: [], equipment: [], subcontractors: [], others: [lineItem({ description: "Unrelated", unit: "LS" })] });
+  };
+  const over: Record<string, unknown> = { "GET /cors": envelope(cors) };
+  for (const c of cors) over[`GET /cors/${c.id}/line-items`] = lines;
+  const h = await setup(over, { cfg: { maxSubrequests: 10 } });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work", sources: { heavybid: [POND[1]] } });
+  assert.equal(r.isError, false, r.text);
+  assert.ok(order.length > 0 && order.length < 10, `read ${order.length}`);
+  assert.deepEqual([...order].sort().reverse(), Array.from({ length: order.length }, (_, i) => 7009 - i), "newest first");
+  assert.ok(max > 1 && max <= 4, `concurrency ${max}`);
+  assert.deepEqual(r.json.warnings, [`Bid item check covered ${order.length} of 10 CORs on this Job (Clearstory request limit reached or line items unreadable); check the rest in Clearstory.`]);
+  assert.match(r.json.preview_id, /^[0-9a-f-]{36}$/);
+  assert.ok(h.apiCalls().every((c) => c.method === "GET"));
+});
+
+test("preview_draft_cor warns once per COR and bid item, even when both title and lines match", async () => {
+  const cor = corSent({ id: 6302, corNumber: "COR 2", title: "Pond clay liner", tmTags: [], tmTagCount: 0 });
+  const h = await setup({ "GET /cors": envelope([cor]), "GET /cors/6302/line-items": cor2Lines });
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Pond liner work", sources: { heavybid: [POND[1], POND[1], POND[2]] } });
+  assert.equal(r.isError, false, r.text);
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid J2611-PM bid item 20210 \"Pond clay liner\" matches the title of COR 2 \"Pond clay liner\" (id 6302, In Review) on this Job.",
+    "Possible double billing: HeavyBid J2611-PM bid item 20205 \"Pond excavation\" matches a line on COR 2 \"Pond clay liner\" (id 6302, In Review) on this Job.",
+  ]);
+});
+
+test("preview_draft_cor tells Claude to always pass bid item description and unit", async () => {
+  const h = await setup();
+  const t = (await h.client.listTools()).tools.find((x) => x.name === "preview_draft_cor")!;
+  assert.match(JSON.stringify(t.inputSchema), /Always pass description and unit/);
 });
