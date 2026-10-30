@@ -60,6 +60,20 @@ const parseLedger = (raw: string): CreatedDraft => { try { return JSON.parse(raw
 
 const overlaps = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
 
+/** Pricing choices passed to preview_draft_cor (#21). */
+export interface PricingInput { estimate_code?: string; markup_pct?: number; tax_pct?: number; rounding?: "up" | "nearest" }
+
+/** Checks the PM confirms in the preview: estimate, markup basis, tax, rounding; "not stated" when missing. */
+export function pricingChecks(p: PricingInput): string[] {
+  const ns = "not stated";
+  return [
+    `Estimate used: ${p.estimate_code?.trim() || ns}`,
+    `Markup: ${p.markup_pct === undefined ? ns : p.markup_pct === 0 ? "none on top of the bid price" : `${p.markup_pct}% on top of the bid price`}`,
+    `Tax: ${p.tax_pct === undefined ? ns : `${p.tax_pct}%`}`,
+    `Rounding: ${p.rounding === undefined ? ns : p.rounding === "up" ? "unit prices rounded up to the cent" : "unit prices rounded to the nearest cent"}`,
+  ];
+}
+
 /** Audit log line + KV record. Callers never pass title, description or secrets. */
 async function audit(kv: KVNamespace, rec: { evt: string; preview_id: string; at: string } & Rec) {
   const line = JSON.stringify(rec);
@@ -72,7 +86,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
   const now = session.now ?? (() => new Date());
   server.tool(
     "preview_draft_cor",
-    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Default pricing: the HeavyBid bid price × quantity for the matching bid item; apply a markup, cost basis or actual HeavyJob hours only when the user asks. Put the math in the description (estimate, bid item, quantity, unit, unit price, any adjustment). Always pass sources when you priced from HeavyBid bid items or T&M Tags, so double billing of the same bid item or tag is caught. Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
+    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Default pricing: the HeavyBid bid price × quantity for the matching bid item; apply a markup, cost basis or actual HeavyJob hours only when the user asks. Pricing rules: (1) Use the HeavyBid estimate whose estimate code starts with the job number and whose GC/owner matches the Clearstory Job (search results can list other jobs' estimates first); prefer the Job's -PM estimate for change bid items; say which estimate you used. (2) Round each unit price up to the cent before multiplying by quantity. (3) Before pricing, read the Job's most recent CORs (get_cor) and copy their markup %, tax and rounding (e.g. tax on materials, markup on the pre-tax subtotal); state them in the description. (4) T&M: rates differ by Job, so use list_rates for the Job and match by rate_id (equipment names don't match HeavyJob). (5) Bid prices already include markup: add markup only when the PM asks, and say it is on top of the bid price. Always pass pricing (estimate_code, markup_pct, tax_pct, rounding) so the preview shows them as checks for the PM to confirm. Put the math in the description (estimate, bid item, quantity, unit, unit price, any adjustment). Always pass sources when you priced from HeavyBid bid items or T&M Tags, so double billing of the same bid item or tag is caught. Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
     {
       ...jobArgs,
       title: z.string().describe("COR title (1-255 characters)."),
@@ -84,6 +98,12 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           .describe("HeavyBid bid items priced, e.g. [{estimate_code: \"B26055\", bid_item: \"2575\"}]."),
         tm_tag_ids: z.array(z.number().int()).optional().describe("Clearstory T&M Tag ids (not tag numbers) billed on this COR."),
       }).optional().describe("Structured sources for the double-billing check; always pass when priced from HeavyBid or T&M Tags."),
+      pricing: z.object({
+        estimate_code: z.string().optional().describe("HeavyBid estimate used, e.g. \"J2608-PM\"."),
+        markup_pct: z.number().min(0).optional().describe("Markup % added on top of the bid price (0 = none; bid prices already include markup)."),
+        tax_pct: z.number().min(0).optional().describe("Tax % applied, as on the Job's recent CORs."),
+        rounding: z.enum(["up", "nearest"]).optional().describe("How unit prices were rounded to the cent (CORs usually round up)."),
+      }).optional().describe("Pricing choices, echoed as checks in the preview for the PM to confirm."),
     },
     { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async (a) => {
@@ -171,6 +191,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         title, description, amount,
         recorded_as: session.email,
         warnings,
+        ...(a.pricing ? { checks: pricingChecks(a.pricing) } : {}),
         preview_id: previewId,
       });
     },
