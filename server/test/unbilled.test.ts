@@ -110,3 +110,32 @@ test("list_unbilled_tm_tags: scope partial when paging hits the subrequest budge
   assert.equal(r.json.scope, "partial");
   assert.match(r.json.note, /request limit/);
 });
+
+test("list_unbilled_tm_tags pulls CORs from archived Jobs too", async () => {
+  const h = await harness(routes(), { now: NOW });
+  await h.call("list_unbilled_tm_tags", { job: "J25008" });
+  assert.equal(params(h, "/cors")[0].get("includeFromArchivedProjects"), "true");
+});
+
+test("list_unbilled_tm_tags: signed_on is the New York day (late-evening signature isn't the next UTC day)", async () => {
+  const late = tag(9385, "EX00385", { dateOfWorkPerformed: "2026-10-02T00:00:00.000Z", signedAt: "2026-10-06T02:00:00.000Z" });
+  const h = await harness(routes([late]), { now: NOW });
+  const r = await h.call("list_unbilled_tm_tags", { job: "J25008" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.unbilled_tm_tags[0].signed_on, "2026-10-05");
+  assert.equal(r.json.unbilled_tm_tags[0].days_since_signed, 25);
+});
+
+test("list_unbilled_tm_tags reads the source ledger in parallel", async () => {
+  const kv = fakeKv();
+  const orig = kv.kv.get.bind(kv.kv) as (k: string) => Promise<string | null>;
+  let inFlight = 0, max = 0;
+  (kv.kv as unknown as { get: (k: string) => Promise<string | null> }).get = async (k: string) => {
+    if (k.startsWith("cor-source:")) { inFlight++; max = Math.max(max, inFlight); await new Promise((res) => setTimeout(res, 5)); inFlight--; }
+    return orig(k);
+  };
+  const h = await harness(routes(), { now: NOW, kv });
+  const r = await h.call("list_unbilled_tm_tags", { job: "J25008" });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(max, 2);
+});

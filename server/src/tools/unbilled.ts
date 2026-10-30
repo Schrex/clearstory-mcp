@@ -7,7 +7,7 @@ import { pullAll } from "../paging.js";
 import { NOT_VOID, tmTagIds } from "../cors.js";
 import { compact, day, hours, reply, type Rec } from "../util.js";
 import { workDates } from "./tags.js";
-import { sourceKey, type CreatedDraft } from "./draft-cor.js";
+import { parseLedger, sourceKey } from "./draft-cor.js";
 
 /** T&M Tag statuses that mean the GC signed. */
 const SIGNED = ["signed", "signed_not_sent"];
@@ -43,7 +43,7 @@ export function registerUnbilledTools({ server, cs, session }: ToolContext) {
       // A T&M Tag is updated on/after its work date, so the window start narrows the pull by updatedAt.
       const tagSources = SIGNED.map((status) => ({ path: "/tags", query: { inbox: "sent", projectId: jobId, status, fromUpdatedAt: range.from } }));
       // CORs first (fewer rows): a budget stop then lands on the T&M Tags as scope partial, not an error.
-      const cors = await pullAll<Rec>(cs, { path: "/cors", query: { inbox: "sent", projectIds: jobId, hasTags: 1, statuses: NOT_VOID.join(",") } });
+      const cors = await pullAll<Rec>(cs, { path: "/cors", query: { inbox: "sent", projectIds: jobId, hasTags: 1, statuses: NOT_VOID.join(","), includeFromArchivedProjects: true } });
       const tags = await pullAll<Rec>(cs, tagSources);
 
       const onCor = new Set(cors.records.flatMap(tmTagIds));
@@ -58,8 +58,10 @@ export function registerUnbilledTools({ server, cs, session }: ToolContext) {
 
       const unbilled: Rec[] = [];
       const onDraft: Rec[] = [];
-      for (const t of candidates) {
-        const signed = day(t.signedAt);
+      const ledgerRaws = await Promise.all(candidates.map((t) => session.kv.get(sourceKey(t.projectId as number, { tm_tag_id: t.id as number }))));
+      for (const [i, t] of candidates.entries()) {
+        const signedMs = typeof t.signedAt === "string" ? Date.parse(t.signedAt) : NaN;
+        const signed = Number.isFinite(signedMs) ? localDay(new Date(signedMs)) : undefined; // New York day, like `today`
         const row = {
           ...compact({
             id: t.id,
@@ -75,10 +77,9 @@ export function registerUnbilledTools({ server, cs, session }: ToolContext) {
             days_since_signed: signed ? daysBetween(signed, today) : undefined,
           }),
         };
-        const raw = await session.kv.get(sourceKey(t.projectId as number, { tm_tag_id: t.id as number }));
+        const raw = ledgerRaws[i];
         if (raw === null) { unbilled.push(row); continue; }
-        let draft: CreatedDraft = {};
-        try { draft = JSON.parse(raw) as CreatedDraft; } catch { /* unknown shape: still on a draft we created */ }
+        const draft = parseLedger(raw); // unknown shape: still on a draft we created
         onDraft.push({ ...row, draft_cor: compact({ cor_id: draft.cor_id, cor_number: draft.cor_number, state: draft.state, created_at: day(draft.created_at) }) });
       }
       const oldestFirst = (x: Rec, y: Rec) => String(x.work_date ?? "").localeCompare(String(y.work_date ?? "")) || String(x.tag_number).localeCompare(String(y.tag_number));

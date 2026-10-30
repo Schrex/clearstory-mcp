@@ -255,3 +255,32 @@ test("preview_draft_cor echoes pricing as checks for the PM to confirm; unstated
   const plain = await h.call("preview_draft_cor", ARGS);
   assert.equal(plain.json.checks, undefined);
 });
+
+test("sourceKey escapes ':' so estimate code and bid item can't collide; keys without ':' unchanged", () => {
+  const a = sourceKey(7001, { heavybid: { estimate_code: "A:B", bid_item: "C" } });
+  const b = sourceKey(7001, { heavybid: { estimate_code: "A", bid_item: "B:C" } });
+  assert.notEqual(a, b);
+  assert.equal(sourceKey(7001, { heavybid: { estimate_code: "J2608-PM", bid_item: "10  20" } }), "cor-source:7001:hb:J2608-PM:10 20");
+});
+
+test("preview_draft_cor dedupes HeavyBid sources by their normalized key", async () => {
+  const h = await setup();
+  const r = await h.call("preview_draft_cor", { ...ARGS, sources: { heavybid: [HB, { estimate_code: " b26055", bid_item: "2575 " }] } });
+  assert.equal(r.isError, false, r.text);
+  assert.match(r.json.description, /Sources: HeavyBid B26055 bid item 2575$/);
+  assert.deepEqual(JSON.parse(h.kv.store.get(`cor-preview:${r.json.preview_id}`)!).sources, [{ heavybid: HB }]);
+});
+
+test("preview_draft_cor reads the source ledger in parallel", async () => {
+  const h = await setup();
+  const kv = h.kv.kv as unknown as { get: (k: string) => Promise<string | null> };
+  const orig = kv.get;
+  let inFlight = 0, max = 0;
+  kv.get = async (k: string) => {
+    if (k.startsWith("cor-source:")) { inFlight++; max = Math.max(max, inFlight); await new Promise((res) => setTimeout(res, 5)); inFlight--; }
+    return orig(k);
+  };
+  const r = await h.call("preview_draft_cor", { ...ARGS, sources: { heavybid: [HB], tm_tag_ids: [5101, 5102] } });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(max, 3);
+});

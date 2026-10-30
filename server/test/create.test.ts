@@ -202,3 +202,38 @@ test("source ledger is written on an unknown outcome, not on a refused create, a
   await plain.call("create_draft_cor", { preview_id: (await preview(plain)).preview_id });
   assert.equal(sourcePuts(plain).length, 0);
 });
+
+// ---- post-POST bookkeeping never turns a created COR into an error ----
+const failKvPuts = (h: Awaited<ReturnType<typeof setup>>) => {
+  (h.kv.kv as unknown as { put: () => Promise<void> }).put = async () => { throw new Error("KV put failed"); };
+};
+
+test("created: a KV failure writing the ledger/audit still returns state created with the COR id and number, plus a note", async () => {
+  const h = await setup();
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  failKvPuts(h);
+  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.state, "created");
+  assert.equal(r.json.cor_id, 6301);
+  assert.equal(r.json.cor_number, "COR-018");
+  assert.match(r.json.note, /duplicate.*not (fully )?saved/i);
+  assert.equal(posts(h).length, 1);
+});
+
+test("unknown: a KV failure writing the ledger/audit still returns state unknown with a note", async () => {
+  const h = await setup({ "POST /cors": () => json({}, 503) });
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  failKvPuts(h);
+  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.state, "unknown");
+  assert.match(r.json.message, /Draft COR Log/);
+  assert.match(r.json.note, /duplicate.*not (fully )?saved/i);
+});
+
+test("created: no note when bookkeeping succeeds", async () => {
+  const h = await setup();
+  const r = await h.call("create_draft_cor", { preview_id: (await preview(h)).preview_id });
+  assert.equal(r.json.note, undefined);
+});

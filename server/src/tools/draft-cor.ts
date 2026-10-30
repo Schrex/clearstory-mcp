@@ -43,7 +43,8 @@ export const SOURCE_TTL_S = 365 * 24 * 60 * 60;
 /** Where a draft COR's numbers came from: one HeavyBid bid item or one T&M Tag (Clearstory tag id). */
 export type CorSource = { heavybid: { estimate_code: string; bid_item: string } } | { tm_tag_id: number };
 
-const part = (s: string) => s.trim().replace(/\s+/g, " ").toUpperCase();
+/** Normalized key part; '%' and ':' escaped so estimate code and bid item can't collide (other keys unchanged). */
+const part = (s: string) => s.trim().replace(/\s+/g, " ").toUpperCase().replace(/%/g, "%25").replace(/:/g, "%3A");
 
 /** KV key of the source ledger entry (a CreatedDraft) create_draft_cor writes per Job and source, e.g. `cor-source:7001:tag:5101`. */
 export const sourceKey = (jobId: number, src: CorSource) => "heavybid" in src
@@ -56,7 +57,7 @@ export const sourceLabel = (src: CorSource) => "heavybid" in src
   : `T&M Tag id ${src.tm_tag_id}`;
 
 /** Parse a ledger value; unknown shape gives {}. */
-const parseLedger = (raw: string): CreatedDraft => { try { return JSON.parse(raw) as CreatedDraft; } catch { return {}; } };
+export const parseLedger = (raw: string): CreatedDraft => { try { return JSON.parse(raw) as CreatedDraft; } catch { return {}; } };
 
 const overlaps = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
 
@@ -133,10 +134,17 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         const status = corStatus(c.status);
         warnings.push(`Possible duplicate: ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job has the same or an overlapping title.`);
       }
-      const sources: CorSource[] = [
+      // Deduped by ledger key (same normalized bid item / tag id once).
+      const seenSrc = new Set<string>();
+      const sources = ([
         ...(a.sources?.heavybid ?? []).map((heavybid) => ({ heavybid })),
-        ...[...new Set(a.sources?.tm_tag_ids ?? [])].map((tm_tag_id) => ({ tm_tag_id })),
-      ];
+        ...(a.sources?.tm_tag_ids ?? []).map((tm_tag_id) => ({ tm_tag_id })),
+      ] as CorSource[]).filter((s) => {
+        const k = sourceKey(projectId, s);
+        if (seenSrc.has(k)) return false;
+        seenSrc.add(k);
+        return true;
+      });
       // Double billing (#20): T&M Tags already on a non-Void COR on the Job, then the source ledger (drafts aren't listed).
       const onCor = new Set<string>();
       for (const src of sources) {
@@ -148,8 +156,9 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           warnings.push(`Possible double billing: ${sourceLabel(src)} is already on ${c.corNumber || "COR"} "${c.title}" (id ${c.id}${status ? `, ${status}` : ""}) on this Job.`);
         }
       }
-      for (const src of sources) {
-        const raw = await session.kv.get(sourceKey(projectId, src));
+      const ledgerRaws = await Promise.all(sources.map((src) => session.kv.get(sourceKey(projectId, src))));
+      for (const [i, src] of sources.entries()) {
+        const raw = ledgerRaws[i];
         if (raw === null) continue;
         const d = parseLedger(raw);
         if ("tm_tag_id" in src && onCor.has(`${src.tm_tag_id}:${d.cor_id}`)) continue;
@@ -161,8 +170,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       if (cors.scope === "partial") warnings.push("Duplicate check incomplete: Clearstory request limit reached before every COR on the Job was read.");
       const ledger = await session.kv.get(createdKey(projectId, title));
       if (ledger !== null) {
-        let d: CreatedDraft = {};
-        try { d = JSON.parse(ledger) as CreatedDraft; } catch { /* unknown shape: still warn */ }
+        const d = parseLedger(ledger); // unknown shape: still warn
         const info = [d.cor_id !== undefined ? `COR id ${d.cor_id}` : d.cor_number, d.email ? `by ${d.email}` : "", day(d.created_at)].filter(Boolean).join(", ");
         warnings.push(d.state === "unknown"
           ? `Possible duplicate: a create of a draft COR with this title via Claude on this Job had an unknown outcome${info ? ` (${info})` : ""}. Check Clearstory; it may not show in Clearstory's COR list until sent.`
@@ -219,6 +227,17 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         for (const src of p.sources ?? []) await session.kv.put(sourceKey(p.body.projectId, src), JSON.stringify(entry), { expirationTtl: SOURCE_TTL_S });
         return entry;
       };
+      /** Post-POST ledger + audit; a KV failure must never turn a created/unknown COR into an error (the user would recreate it). */
+      const bookkeep = async (e: Pick<CreatedDraft, "state" | "cor_id" | "cor_number">, evt: Rec & { evt: string }) => {
+        try {
+          await record(e);
+          await audit(session.kv, { ...evt, preview_id, at });
+          return {};
+        } catch (err) {
+          console.error(JSON.stringify({ evt: "cor_bookkeeping_failed", state: e.state, cor_id: e.cor_id, preview_id, error: String(err) }));
+          return { note: "The duplicate-check ledger for this draft COR was not fully saved, so a later preview may not warn about it. Do not create it again." };
+        }
+      };
       let cor: CreatedCor;
       try {
         cor = await cs.createDraftCor(p.body);
@@ -229,19 +248,19 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
         }
         if (!(e instanceof WriteOutcomeUnknownError)) throw e;
         // No retry (no idempotency key) and no lookup: GET /cors does not list drafts. The user checks the Draft COR Log.
-        await record({ state: "unknown" });
-        await audit(session.kv, { evt: "cor_unknown", ...base, preview_id, at });
+        const note = await bookkeep({ state: "unknown" }, { evt: "cor_unknown", ...base });
         return reply({
           state: "unknown",
           message: `${e.message} Do not retry: tell the user to check the Draft COR Log for Job ${p.job_number} in Clearstory before previewing again.`,
           job_number: p.job_number,
+          ...note,
         });
       }
-      await record({ state: "created", cor_id: cor.id, cor_number: cor.corNumber });
-      await audit(session.kv, { evt: "cor_created", ...base, cor_id: cor.id, cor_number: cor.corNumber, preview_id, at });
+      const note = await bookkeep({ state: "created", cor_id: cor.id, cor_number: cor.corNumber },
+        { evt: "cor_created", ...base, cor_id: cor.id, cor_number: cor.corNumber });
       return reply(compact({
         state: "created", cor_id: cor.id, cor_number: cor.corNumber, status: corStatus(cor.status),
-        amount: money(cor.requestedAmount) ?? p.body.amount, job_number: p.job_number,
+        amount: money(cor.requestedAmount) ?? p.body.amount, job_number: p.job_number, ...note,
       }));
     },
   );
