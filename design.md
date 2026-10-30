@@ -70,7 +70,7 @@ Accept job **number** as well as id; trimmed codes; compact default records with
 ## Decided (2026-10-27)
 - Team access (2026-10-28): `ALLOWED_USER_EMAIL` = the same 6 named @schrex.com emails as HeavyJob (zach, dave, prasad, ryan, sumanth, jeri) + one shared team password (Bitwarden item "ClearStory MCP connector", "HCSS Connectors" collection); sign-in lasts 90 days (refresh TTL), access tokens 1 h. Email is not verified, so the password is the gate. Revoke everyone: rotate `TOKEN_EPOCH` (+ password via `scripts/set-password.sh`). Changing the password alone signs no one out.
 - Read-only v0.1 ([ADR 0001](docs/adr/0001-read-only-enforced-in-server.md)).
-- v0.2 draft COR ([ADR 0003](docs/adr/0003-draft-cor-create-only-write.md)): `preview_draft_cor` then `create_draft_cor`, the only write (POST /cors, never sent to the GC); every signed-in user may create, for now; amount cap per draft COR 250,000 by default (`MAX_DRAFT_COR_AMOUNT`).
+- v0.2 draft COR ([ADR 0003](docs/adr/0003-draft-cor-create-only-write.md)): `preview_draft_cor` then `create_draft_cor`, the only write (POST /cors, never sent to the GC); every signed-in user may create, for now; amount cap per draft COR 250,000 by default (`MAX_DRAFT_COR_AMOUNT`). Pricing (2026-10-30): default HeavyBid bid price × quantity; markup, cost basis or actual HeavyJob hours only when the PM asks in chat; PM reviews the preview and confirms; math goes in the COR description.
 - Schreiber is mainly a sub: default inbox `sent`.
 - Confirmed in Clearstory settings 2026-10-27: plan **Professional**, company type **Subcontractor**.
 - Web API Application `Schreiber Claude MCP` created 2026-10-27 by Sumanth; `CLEARSTORY_CLIENT_ID` / `CLEARSTORY_CLIENT_SECRET` set as Worker secrets.

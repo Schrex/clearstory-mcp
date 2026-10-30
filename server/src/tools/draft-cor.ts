@@ -69,11 +69,11 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
   const now = session.now ?? (() => new Date());
   server.tool(
     "preview_draft_cor",
-    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
+    "Preview a draft COR before creating it in Clearstory. Sends nothing to Clearstory. Returns the Job, GC, contract(s), title, final description (with a 'Drafted via Claude by' footer), amount, warnings (e.g. possible duplicate CORs) and a preview_id. Default pricing: the HeavyBid bid price × quantity for the matching bid item; apply a markup, cost basis or actual HeavyJob hours only when the user asks. Put the math in the description (estimate, bid item, quantity, unit, unit price, any adjustment). Show the whole preview to the user; call create_draft_cor with the preview_id only after the user says yes. The preview expires after 15 minutes.",
     {
       ...jobArgs,
       title: z.string().describe("COR title (1-255 characters)."),
-      description: z.string().describe("COR description, e.g. the pricing breakdown."),
+      description: z.string().describe("COR description with the pricing breakdown: estimate, bid item, quantity, unit, unit price, adjustments."),
       amount: z.number().describe("COR amount in dollars (> 0)."),
       source: z.string().optional().describe("Where the numbers came from, e.g. \"HeavyBid B26055 bid items 2575, 2555\"."),
     },
