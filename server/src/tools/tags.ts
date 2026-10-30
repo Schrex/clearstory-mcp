@@ -35,7 +35,7 @@ function shapeTag(t: Rec, detail = false): Rec {
 }
 
 /** Every work date on a T&M Tag (main plus additional), as YYYY-MM-DD. */
-const workDates = (t: Rec): string[] =>
+export const workDates = (t: Rec): string[] =>
   [t.dateOfWorkPerformed, ...((t.dateOfWorkPerformedAdditional as unknown[] | null | undefined) ?? [])].map(day).filter((d): d is string => !!d);
 
 function detailFields(t: Rec): Rec {

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { harness, json, type FakeRequest, type HarnessOpts } from "./harness.ts";
 import { contractDetail, envelope, projectRecord } from "./fixtures.ts";
 import { corDetail, corSent } from "./fixtures-cors.ts";
-import { createdKey } from "../src/tools/draft-cor.ts";
+import { createdKey, sourceKey } from "../src/tools/draft-cor.ts";
 
 const NOW = () => new Date("2026-10-29T15:00:00.000Z");
 const ARGS = { job: "23104", title: "Extra 12in storm, 150 LF", description: "150 LF of 12\" storm at bid price.", amount: 12345.678 };
@@ -137,9 +137,10 @@ test("422: Clearstory's message is returned, nothing retried, the preview is use
 const unknowns: [string, () => Response | Promise<Response>][] = [
   ["503", () => json({ message: "unavailable" }, 503)],
   ["timeout", () => Promise.reject(new DOMException("The operation timed out.", "TimeoutError"))],
+  ["unparseable 2xx", () => new Response("<html>ok</html>", { status: 201 })],
 ];
 for (const [name, answer] of unknowns) {
-  test(`${name}: state unknown, no retry, one lookup GET by Job and title, ledger marked unknown, cor_unknown audited`, async (t) => {
+  test(`${name}: state unknown, exactly one POST and no GET, Draft COR Log message, ledger marked unknown, cor_unknown audited`, async (t) => {
     const logs = await audits(t);
     const h = await setup({ "POST /cors": answer });
     const p = await preview(h);
@@ -147,60 +148,16 @@ for (const [name, answer] of unknowns) {
     const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
     assert.equal(r.isError, false, r.text);
     assert.equal(r.json.state, "unknown");
-    assert.match(r.json.message, /check Clearstory.*before previewing again/i);
+    assert.match(r.json.message, /Draft COR Log/);
+    assert.match(r.json.message, /before previewing again/i);
     assert.equal(r.json.probably_created, undefined);
-    const after = h.apiCalls().slice(before);
-    assert.deepEqual(after.map((c) => c.method), ["POST", "GET"]);
-    const q = new URL(after[1].url);
-    assert.ok(q.pathname.endsWith("/cors"));
-    assert.equal(q.searchParams.get("projectIds"), "7001");
-    assert.equal(q.searchParams.get("searchTitle"), ARGS.title);
+    assert.deepEqual(h.apiCalls().slice(before).map((c) => c.method), ["POST"]);
     const ledger = h.kv.puts.find((x) => x.key === createdKey(7001, ARGS.title))!;
     assert.deepEqual(JSON.parse(ledger.value), { state: "unknown", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
     assert.deepEqual(ledger.opts, { expirationTtl: 30 * 24 * 60 * 60 });
     assert.deepEqual(createAudits(logs), [{ evt: "cor_unknown", email: "pm@schrex.com", job: "23104", amount: 12345.68, preview_id: p.preview_id, at: "2026-10-29T15:00:00.000Z" }]);
   });
 }
-
-test("outcome unknown: a same-title COR on the Job from the last few minutes is reported as probably created", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 502),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? envelope([
-      corSent({ id: 6302, corNumber: "COR-019", title: "Extra 12in storm, 150 LF", status: "placeholder", createdAt: "2026-10-29T14:59:40.000Z" }),
-      corSent({ id: 6100, corNumber: "COR-010", title: "Extra 12in storm, 150 LF", createdAt: "2026-10-01T10:00:00.000Z" }),
-    ]) : envelope([]),
-  });
-  const p = await preview(h);
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.json.state, "unknown");
-  assert.deepEqual(r.json.probably_created, { cor_id: 6302, cor_number: "COR-019", status: "Placeholder" });
-  assert.deepEqual(JSON.parse(h.kv.store.get(createdKey(7001, ARGS.title))!), { state: "unknown", cor_id: 6302, cor_number: "COR-019", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
-});
-
-test("outcome unknown: a failing lookup still answers state unknown", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 500),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? json({ message: "bad" }, 400) : envelope([]),
-  });
-  const p = await preview(h);
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.isError, false, r.text);
-  assert.equal(r.json.state, "unknown");
-  assert.equal(posts(h).length, 1);
-});
-
-test("outcome unknown: a lookup that gets a 5xx is not retried (exactly one lookup GET) and still answers state unknown", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 503),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? json({ message: "down" }, 503) : envelope([]),
-  });
-  const p = await preview(h);
-  const before = h.apiCalls().length;
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.isError, false, r.text);
-  assert.equal(r.json.state, "unknown");
-  assert.deepEqual(h.apiCalls().slice(before).map((c) => c.method), ["POST", "GET"]);
-});
 
 test("a preview after an unknown outcome warns that a draft with this title may already exist", async () => {
   const h = await setup({ "POST /cors": () => json({}, 500) });
@@ -209,4 +166,74 @@ test("a preview after an unknown outcome warns that a draft with this title may 
   assert.deepEqual(r.json.warnings, [
     "Possible duplicate: a create of a draft COR with this title via Claude on this Job had an unknown outcome (by pm@schrex.com, 2026-10-29). Check Clearstory; it may not show in Clearstory's COR list until sent.",
   ]);
+});
+
+// ---- source ledger (#20) ----
+const SOURCES = { heavybid: [{ estimate_code: "B26055", bid_item: "2575" }], tm_tag_ids: [5101] };
+const sourcePuts = (h: Awaited<ReturnType<typeof setup>>) => h.kv.puts.filter((x) => x.key.startsWith("cor-source:"));
+
+test("created: writes a 365-day source ledger entry per source holding the COR number; a later preview under another title warns", async () => {
+  const h = await setup();
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  assert.equal((await h.call("create_draft_cor", { preview_id: p.preview_id })).isError, false);
+  const puts = sourcePuts(h);
+  assert.deepEqual(puts.map((x) => x.key), [sourceKey(7001, { heavybid: SOURCES.heavybid[0] }), sourceKey(7001, { tm_tag_id: 5101 })]);
+  for (const x of puts) {
+    assert.deepEqual(x.opts, { expirationTtl: 365 * 24 * 60 * 60 });
+    assert.deepEqual(JSON.parse(x.value), { state: "created", cor_id: 6301, cor_number: "COR-018", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
+  }
+  const r = await h.call("preview_draft_cor", { ...ARGS, title: "Clay liner", sources: { heavybid: SOURCES.heavybid } });
+  assert.deepEqual(r.json.warnings, [
+    "Possible double billing: HeavyBid B26055 bid item 2575 is already on COR-018 (COR id 6301, by pm@schrex.com, 2026-10-29), created via Claude on this Job. It may not show in Clearstory's COR list until sent.",
+  ]);
+});
+
+test("source ledger is written on an unknown outcome, not on a refused create, and not without sources", async () => {
+  const unknown = await setup({ "POST /cors": () => json({}, 503) });
+  await unknown.call("create_draft_cor", { preview_id: (await preview(unknown, { ...ARGS, sources: SOURCES })).preview_id });
+  assert.equal(sourcePuts(unknown).length, 2);
+  for (const x of sourcePuts(unknown)) assert.equal(JSON.parse(x.value).state, "unknown");
+
+  const refused = await setup({ "POST /cors": () => json({ message: "no" }, 422) });
+  await refused.call("create_draft_cor", { preview_id: (await preview(refused, { ...ARGS, sources: SOURCES })).preview_id });
+  assert.equal(sourcePuts(refused).length, 0);
+
+  const plain = await setup();
+  await plain.call("create_draft_cor", { preview_id: (await preview(plain)).preview_id });
+  assert.equal(sourcePuts(plain).length, 0);
+});
+
+// ---- post-POST bookkeeping never turns a created COR into an error ----
+const failKvPuts = (h: Awaited<ReturnType<typeof setup>>) => {
+  (h.kv.kv as unknown as { put: () => Promise<void> }).put = async () => { throw new Error("KV put failed"); };
+};
+
+test("created: a KV failure writing the ledger/audit still returns state created with the COR id and number, plus a note", async () => {
+  const h = await setup();
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  failKvPuts(h);
+  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.state, "created");
+  assert.equal(r.json.cor_id, 6301);
+  assert.equal(r.json.cor_number, "COR-018");
+  assert.match(r.json.note, /duplicate.*not (fully )?saved/i);
+  assert.equal(posts(h).length, 1);
+});
+
+test("unknown: a KV failure writing the ledger/audit still returns state unknown with a note", async () => {
+  const h = await setup({ "POST /cors": () => json({}, 503) });
+  const p = await preview(h, { ...ARGS, sources: SOURCES });
+  failKvPuts(h);
+  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.json.state, "unknown");
+  assert.match(r.json.message, /Draft COR Log/);
+  assert.match(r.json.note, /duplicate.*not (fully )?saved/i);
+});
+
+test("created: no note when bookkeeping succeeds", async () => {
+  const h = await setup();
+  const r = await h.call("create_draft_cor", { preview_id: (await preview(h)).preview_id });
+  assert.equal(r.json.note, undefined);
 });

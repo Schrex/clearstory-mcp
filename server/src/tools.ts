@@ -9,6 +9,7 @@ import { registerNotificationTools } from "./tools/notifications.js";
 import { registerTagTools } from "./tools/tags.js";
 import { registerCorTools } from "./tools/cors.js";
 import { registerDraftCorTools } from "./tools/draft-cor.js";
+import { registerUnbilledTools } from "./tools/unbilled.js";
 
 /** Who is calling (from the OAuth props) and the Worker's KV. */
 export interface Session { email: string; kv: KVNamespace; now?: () => Date }
@@ -24,6 +25,7 @@ const MODULES: ((t: ToolContext) => void)[] = [
   registerTagTools,
   registerCorTools,
   registerDraftCorTools,
+  registerUnbilledTools,
   registerSummaryTools,
 ];
 
