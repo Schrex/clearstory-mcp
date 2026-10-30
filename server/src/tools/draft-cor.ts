@@ -14,8 +14,6 @@ export const PREVIEW_TTL_S = 15 * 60;
 export const AUDIT_TTL_S = 400 * 24 * 60 * 60;
 /** Created-draft ledger entries kept 30 days. */
 export const LEDGER_TTL_S = 30 * 24 * 60 * 60;
-/** After an unknown outcome, a same-title COR created this recently counts as probably ours. */
-const PROBABLY_OURS_MS = 10 * 60 * 1000;
 
 /** KV key of a stored preview. */
 export const previewKey = (previewId: string) => `cor-preview:${previewId}`;
@@ -68,24 +66,6 @@ async function audit(kv: KVNamespace, rec: { evt: string; preview_id: string; at
   console.log(line);
   const key = `cor-audit:${rec.at}:${rec.preview_id}${rec.evt === "cor_preview" ? "" : `:${rec.evt}`}`;
   await kv.put(key, line, { expirationTtl: AUDIT_TTL_S });
-}
-
-/**
- * After an unknown outcome: exactly one GET /cors (no retries) on the Job by title for a same-title COR created in the last few minutes.
- * Never throws (drafts may not be listed, and the lookup itself can fail).
- */
-async function findJustCreated(cs: ClearstoryClient, projectId: number, title: string, at: Date): Promise<Rec | undefined> {
-  try {
-    const page = await cs.getOnce<{ records?: Rec[] }>("/cors", {
-      inbox: "sent", projectIds: projectId, searchTitle: title, includeFromArchivedProjects: true,
-      sortBy: "createdAt", sortDirection: "desc", limit: 25,
-    });
-    const want = normalizeTitle(title);
-    return (page?.records ?? []).find((c) => normalizeTitle(String(c.title ?? "")) === want
-      && at.getTime() - Date.parse(String(c.createdAt)) <= PROBABLY_OURS_MS);
-  } catch {
-    return undefined;
-  }
 }
 
 export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext) {
@@ -209,8 +189,7 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
       if (p.email !== session.email) throw new Error("This preview was made by a different signed-in person. Nothing was sent to Clearstory; call preview_draft_cor again.");
       // Single use: delete before the POST. KV isn't atomic, so two simultaneous creates could both get here (accepted).
       await session.kv.delete(previewKey(preview_id));
-      const t = now();
-      const at = t.toISOString();
+      const at = now().toISOString();
       const base = { email: session.email, job: p.job_number, amount: p.body.amount };
       /** Ledger entry for this Job and title (duplicate check in later previews). */
       const record = async (e: Pick<CreatedDraft, "state" | "cor_id" | "cor_number">) => {
@@ -228,16 +207,14 @@ export function registerDraftCorTools({ server, cs, cfg, session }: ToolContext)
           throw new Error(`${e.message}\nThe draft COR was not created and this preview is used up; fix the problem, then call preview_draft_cor again.`);
         }
         if (!(e instanceof WriteOutcomeUnknownError)) throw e;
-        // No retry (no idempotency key). One lookup, then the user checks Clearstory.
-        const found = await findJustCreated(cs, p.body.projectId, p.body.title, t);
-        const entry = await record({ state: "unknown", cor_id: found?.id as number | undefined, cor_number: found?.corNumber as string | undefined });
-        await audit(session.kv, { evt: "cor_unknown", ...base, ...compact({ cor_id: entry.cor_id, cor_number: entry.cor_number }), preview_id, at });
-        return reply(compact({
+        // No retry (no idempotency key) and no lookup: GET /cors does not list drafts. The user checks the Draft COR Log.
+        await record({ state: "unknown" });
+        await audit(session.kv, { evt: "cor_unknown", ...base, preview_id, at });
+        return reply({
           state: "unknown",
-          message: `${e.message} Do not retry: tell the user to check Clearstory for this draft COR on Job ${p.job_number} before previewing again.`,
-          probably_created: found ? compact({ cor_id: found.id, cor_number: found.corNumber, status: corStatus(found.status) }) : undefined,
+          message: `${e.message} Do not retry: tell the user to check the Draft COR Log for Job ${p.job_number} in Clearstory before previewing again.`,
           job_number: p.job_number,
-        }));
+        });
       }
       await record({ state: "created", cor_id: cor.id, cor_number: cor.corNumber });
       await audit(session.kv, { evt: "cor_created", ...base, cor_id: cor.id, cor_number: cor.corNumber, preview_id, at });

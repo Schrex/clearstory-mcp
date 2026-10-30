@@ -137,9 +137,10 @@ test("422: Clearstory's message is returned, nothing retried, the preview is use
 const unknowns: [string, () => Response | Promise<Response>][] = [
   ["503", () => json({ message: "unavailable" }, 503)],
   ["timeout", () => Promise.reject(new DOMException("The operation timed out.", "TimeoutError"))],
+  ["unparseable 2xx", () => new Response("<html>ok</html>", { status: 201 })],
 ];
 for (const [name, answer] of unknowns) {
-  test(`${name}: state unknown, no retry, one lookup GET by Job and title, ledger marked unknown, cor_unknown audited`, async (t) => {
+  test(`${name}: state unknown, exactly one POST and no GET, Draft COR Log message, ledger marked unknown, cor_unknown audited`, async (t) => {
     const logs = await audits(t);
     const h = await setup({ "POST /cors": answer });
     const p = await preview(h);
@@ -147,60 +148,16 @@ for (const [name, answer] of unknowns) {
     const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
     assert.equal(r.isError, false, r.text);
     assert.equal(r.json.state, "unknown");
-    assert.match(r.json.message, /check Clearstory.*before previewing again/i);
+    assert.match(r.json.message, /Draft COR Log/);
+    assert.match(r.json.message, /before previewing again/i);
     assert.equal(r.json.probably_created, undefined);
-    const after = h.apiCalls().slice(before);
-    assert.deepEqual(after.map((c) => c.method), ["POST", "GET"]);
-    const q = new URL(after[1].url);
-    assert.ok(q.pathname.endsWith("/cors"));
-    assert.equal(q.searchParams.get("projectIds"), "7001");
-    assert.equal(q.searchParams.get("searchTitle"), ARGS.title);
+    assert.deepEqual(h.apiCalls().slice(before).map((c) => c.method), ["POST"]);
     const ledger = h.kv.puts.find((x) => x.key === createdKey(7001, ARGS.title))!;
     assert.deepEqual(JSON.parse(ledger.value), { state: "unknown", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
     assert.deepEqual(ledger.opts, { expirationTtl: 30 * 24 * 60 * 60 });
     assert.deepEqual(createAudits(logs), [{ evt: "cor_unknown", email: "pm@schrex.com", job: "23104", amount: 12345.68, preview_id: p.preview_id, at: "2026-10-29T15:00:00.000Z" }]);
   });
 }
-
-test("outcome unknown: a same-title COR on the Job from the last few minutes is reported as probably created", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 502),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? envelope([
-      corSent({ id: 6302, corNumber: "COR-019", title: "Extra 12in storm, 150 LF", status: "placeholder", createdAt: "2026-10-29T14:59:40.000Z" }),
-      corSent({ id: 6100, corNumber: "COR-010", title: "Extra 12in storm, 150 LF", createdAt: "2026-10-01T10:00:00.000Z" }),
-    ]) : envelope([]),
-  });
-  const p = await preview(h);
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.json.state, "unknown");
-  assert.deepEqual(r.json.probably_created, { cor_id: 6302, cor_number: "COR-019", status: "Placeholder" });
-  assert.deepEqual(JSON.parse(h.kv.store.get(createdKey(7001, ARGS.title))!), { state: "unknown", cor_id: 6302, cor_number: "COR-019", email: "pm@schrex.com", created_at: "2026-10-29T15:00:00.000Z" });
-});
-
-test("outcome unknown: a failing lookup still answers state unknown", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 500),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? json({ message: "bad" }, 400) : envelope([]),
-  });
-  const p = await preview(h);
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.isError, false, r.text);
-  assert.equal(r.json.state, "unknown");
-  assert.equal(posts(h).length, 1);
-});
-
-test("outcome unknown: a lookup that gets a 5xx is not retried (exactly one lookup GET) and still answers state unknown", async () => {
-  const h = await setup({
-    "POST /cors": () => json({}, 503),
-    "GET /cors": (req: FakeRequest) => req.url.searchParams.get("searchTitle") ? json({ message: "down" }, 503) : envelope([]),
-  });
-  const p = await preview(h);
-  const before = h.apiCalls().length;
-  const r = await h.call("create_draft_cor", { preview_id: p.preview_id });
-  assert.equal(r.isError, false, r.text);
-  assert.equal(r.json.state, "unknown");
-  assert.deepEqual(h.apiCalls().slice(before).map((c) => c.method), ["POST", "GET"]);
-});
 
 test("a preview after an unknown outcome warns that a draft with this title may already exist", async () => {
   const h = await setup({ "POST /cors": () => json({}, 500) });
