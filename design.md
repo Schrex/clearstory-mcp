@@ -35,6 +35,7 @@ Source: Clearstory's public OpenAPI 2.0 spec at https://io.clearstory.build/clea
 | get_cor_log_summary | GET /cors/overview + GET /cors/contract-summary | $ in review vs approved vs void per job/contract; avg days in review |
 | get_cor_aging | GET /cors (statuses=in_review, sorted by daysInReview; server-side buckets 0-14/15-30/31-60/60+) | Stale CORs, ball in court, $ at risk, by GC |
 | list_tm_tags | GET /tags (inbox, status, projectIds, jobNumber, dateOfWorkPerformed, updatedAt range) | Unsigned tags, tags by day, `hcssTimecardId` link |
+| list_unbilled_tm_tags | GET /cors (hasTags=1, non-Void) + GET /tags (status signed, signed_not_sent; work-date window, default 60 d); KV read of `cor-source:<jobId>:tag:<id>` | Unbilled T&M stage "Signed, not on a COR" in one call: tags, hours, days since signed, totals per Job, oldest first; tags in the source ledger listed as `on_draft_cor` (drafts aren't in `GET /cors`); no $ (not on the tag list); `scope: partial` when capped (#22) |
 | get_tm_tag | GET /tags/{id} | Labor/material/equipment items, signer, signed PDF link |
 | list_change_notifications | GET /change-notifications (inbox=received default, types, due date range) | GC pricing requests and T&M authorizations, which are overdue / not responded |
 | get_change_notification | GET /change-notifications/{id} | Detail + linked COR |
